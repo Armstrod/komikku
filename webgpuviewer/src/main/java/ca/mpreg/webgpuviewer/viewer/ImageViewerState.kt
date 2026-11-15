@@ -793,17 +793,22 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
      */
     private fun prefetchNext() {
         if (!bubbleZoomEnabled || !(bubbleGuided || bubbleDock || bubbleDebug)) return
-        val next = getPage(if (isReversed) -1 else 1) as? ImagePage.ImageSingle ?: return
+        val forward = if (isReversed) -1 else 1
+        // The next two pages, nearest first - a quick reader is a page ahead of the finder.
+        val ahead = (1..PREFETCH_PAGES).mapNotNull { getPage(forward * it) as? ImagePage.ImageSingle }
+        if (ahead.isEmpty()) return
         val rtl = isReversed
         prefetchJob?.cancel()
         prefetchJob = scope?.launch {
-            var waited = 0L
-            while (!inkReady(next) && waited < PREFETCH_WAIT_MS) {
-                delay(INK_POLL_MS)
-                waited += INK_POLL_MS
+            for (next in ahead) {
+                var waited = 0L
+                while (!inkReady(next) && waited < PREFETCH_WAIT_MS) {
+                    delay(INK_POLL_MS)
+                    waited += INK_POLL_MS
+                }
+                if (!inkReady(next) || BubbleZoom.isCached(next)) continue
+                withContext(Dispatchers.Default) { BubbleZoom.warm(next, rtl) }
             }
-            if (!inkReady(next) || BubbleZoom.isCached(next)) return@launch
-            withContext(Dispatchers.Default) { BubbleZoom.warm(next, rtl) }
         }
     }
 
@@ -1378,6 +1383,9 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
 
         /** How long the next page is waited on to decode before it is found ahead of time. */
         const val PREFETCH_WAIT_MS = 15000L
+
+        /** How many pages ahead are found while one is read. */
+        const val PREFETCH_PAGES = 2
 
         /** The view below the page: how much of the band a bubble fills, how far it zooms. */
         const val CAMERA_FIT_WIDTH = 0.8f

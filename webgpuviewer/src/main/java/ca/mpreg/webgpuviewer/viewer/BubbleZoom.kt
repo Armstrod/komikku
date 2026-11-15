@@ -386,20 +386,41 @@ internal object BubbleZoom {
         synchronized(cache) {
             cache[map]?.takeIf { it.openEdge == openEdge && it.rightToLeft == rightToLeft }?.let { return it.items }
         }
+        // The whole page read first, on ML Kit's own thread, while the shapes are found here:
+        // its blocks confirm each bubble - far quicker than reading every one apart - and what
+        // lies outside them all is a caption.
+        val pending = TextCheck.startBlocks(map, intArrayOf(0, 0, map.width, map.height))
+        val candidates = BubbleDetect.findAll(map, openEdge)
+        val blocks = pending?.await()
         val items = ArrayList<Item>()
-        for (found in BubbleDetect.findAll(map, openEdge)) {
-            // Read last, being the slowest: hatching or screentone can pass the shape tests.
-            val text = TextCheck.read(map, found)
-            if (!accepted(text, found)) continue
-            items += Item(found, text, intArrayOf(found.x0, found.y0, found.x0 + found.width, found.y0 + found.height))
+        val smallBubble = SMALL_BUBBLE * map.width * map.height
+        for (found in candidates) {
+            val box = intArrayOf(found.x0, found.y0, found.x0 + found.width, found.y0 + found.height)
+            val read = blocks?.filter { mostlyInside(it.box, box) }?.takeIf { it.isNotEmpty() }
+                ?.joinToString("\n") { it.text }
+            val text = when {
+                read != null -> read
+                // Not read on the page: read alone, enlarged - lettering too small for the
+                // page's reading, say. Only where it may well be lettering, as reading is slow.
+                blocks == null || found.lettered || found.width * found.height < smallBubble ->
+                    TextCheck.read(map, found)
+                else -> null
+            }
+            val ok = if (read != null) {
+                if (found.lettered) TextCheck.isLettering(read) else TextCheck.isWords(read)
+            } else {
+                (blocks == null || found.lettered || text != null) && accepted(text, found)
+            }
+            if (!ok) continue
+            items += Item(found, text, box)
         }
         // Lettering with no bubble round it - captions on the artwork, sound effects, spiky
-        // shouts the shape tests turn away: what text recognition reads across the whole page
-        // that no bubble found already holds.
-        for (caption in captions(map, items.map { it.box })) items += caption
+        // shouts the shape tests turn away: what the page's reading holds that no bubble found
+        // already does.
+        for (caption in captions(map, items.map { it.box }, blocks.orEmpty())) items += caption
         val gutters = BubbleDetect.gutterMap(map)
-        for (item in items) item.panel = BubbleDetect.panelAround(map, gutters, item.box)
-        val ordered = BubbleDetect.readingOrder(map, items.map { it.box }, rightToLeft).map { items[it] }
+        BubbleDetect.panelsAround(map, gutters, items.map { it.box }).forEachIndexed { i, p -> items[i].panel = p }
+        val ordered = BubbleDetect.readingOrder(map, items.map { it.box }, rightToLeft, gutters).map { items[it] }
         synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, ordered) }
         return ordered
     }
@@ -408,8 +429,8 @@ internal object BubbleZoom {
      * Lettering text recognition reads on [map] outside every bubble [taken] already: blocks
      * near each other joined into one, each kept where it reads as words, as a box round it.
      */
-    private fun captions(map: InkMap, taken: List<IntArray>): List<Item> {
-        val blocks = TextCheck.blocks(map, intArrayOf(0, 0, map.width, map.height))
+    private fun captions(map: InkMap, taken: List<IntArray>, read: List<TextCheck.Block>): List<Item> {
+        val blocks = read
             .filter { TextCheck.isWords(it.text) }
             .map { it.box.copyOf() to it.text }
             .toMutableList()
@@ -453,6 +474,16 @@ internal object BubbleZoom {
             Item(found, text, box)
         }
     }
+
+    /** Whether most of [inner] lies within [outer] - a block of lettering read in a bubble. */
+    private fun mostlyInside(inner: IntArray, outer: IntArray): Boolean {
+        val ix = max(0, min(inner[2], outer[2]) - max(inner[0], outer[0]))
+        val iy = max(0, min(inner[3], outer[3]) - max(inner[1], outer[1]))
+        return ix.toFloat() * iy >= 0.5f * (inner[2] - inner[0]) * (inner[3] - inner[1])
+    }
+
+    /** A loosely found bubble this small, as a share of the page, is read alone if the page's reading missed it. */
+    private const val SMALL_BUBBLE = 0.02f
 
     /** Whether [page]'s bubbles are all found already - nothing left to wait for. */
     fun isCached(page: ImagePage.ImageSingle): Boolean {

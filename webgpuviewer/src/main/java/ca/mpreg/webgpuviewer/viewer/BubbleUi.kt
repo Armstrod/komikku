@@ -126,7 +126,7 @@ internal fun BubbleUi(state: ImageViewerState) {
             }
         }
 
-        // Debug: the view below the page framed by hand - drag and pinch; a tap steps on.
+        // Debug: the view below the page framed by hand with two fingers; one swipes or taps on.
         if (debug && camera != null && !state.debugAdding) {
             val density = LocalDensity.current
             val top = camera[3] * height
@@ -139,22 +139,31 @@ internal fun BubbleUi(state: ImageViewerState) {
                         val slop = viewConfiguration.touchSlop
                         awaitEachGesture {
                             val down = awaitFirstDown()
-                            var moved = false
+                            // Two fingers frame the view; one swipes from bubble to bubble.
+                            var framing = false
                             var travel = Offset.Zero
                             do {
                                 val event = awaitPointerEvent()
+                                if (event.changes.count { it.pressed } > 1) framing = true
                                 val pan = event.calculatePan()
                                 val zoom = event.calculateZoom()
                                 travel += pan
-                                if (!moved && (event.changes.size > 1 || travel.getDistance() > slop)) moved = true
-                                if (moved) {
-                                    state.debugAdjustFrame(pan, zoom)
-                                    event.changes.fastForEach { if (it.positionChanged()) it.consume() }
-                                }
+                                if (framing) state.debugAdjustFrame(pan, zoom)
+                                event.changes.fastForEach { if (it.positionChanged()) it.consume() }
                             } while (event.changes.fastAny { it.pressed })
-                            if (moved) {
+                            val swiped = travel.getDistance() > 3 * slop
+                            val onSwipe = state.onGuidedSwipe
+                            if (framing) {
                                 state.debugCommitFrame()
-                            } else {
+                            } else if (swiped && onSwipe != null) {
+                                val step = if (abs(travel.y) > abs(travel.x)) {
+                                    if (travel.y > 0f) 1 else -1
+                                } else {
+                                    // On in reading order, the way a swipe turns the page on.
+                                    if (if (state.isReversed) travel.x > 0f else travel.x < 0f) 1 else -1
+                                }
+                                onSwipe(step)
+                            } else if (!swiped) {
                                 val tap = Offset(down.position.x / width, (down.position.y + top) / height)
                                 val onTap = state.onGuidedTap
                                 if (state.bubbleGuided && onTap != null) {

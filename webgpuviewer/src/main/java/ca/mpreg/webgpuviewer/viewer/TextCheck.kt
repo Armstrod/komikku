@@ -80,30 +80,19 @@ internal object TextCheck {
      * The blocks of lettering the recogniser finds in [window] (x0, y0, x1, y1) of [map] - for
      * lettering with no bubble round it. Empty where it can't run.
      */
-    fun blocks(map: InkMap, window: IntArray): List<Block> {
-        if (broken) return emptyList()
-        val x0 = window[0].coerceIn(0, map.width)
-        val y0 = window[1].coerceIn(0, map.height)
-        val w = window[2].coerceIn(x0, map.width) - x0
-        val h = window[3].coerceIn(y0, map.height) - y0
-        if (w <= 0 || h <= 0) return emptyList()
-        return try {
-            val pixels = IntArray(w * h) { i ->
-                val l = map[x0 + i % w, y0 + i / w]
-                (0xFF shl 24) or (l shl 16) or (l shl 8) or l
-            }
-            val small = Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
-            val scale = min(MAX_SCALE, max(1f, BLOCK_MIN_WIDTH.toFloat() / w))
-            val bitmap = if (scale > 1f) {
-                Bitmap.createScaledBitmap(small, (w * scale).toInt(), (h * scale).toInt(), true).also {
-                    if (it !== small) small.recycle()
-                }
-            } else {
-                small
-            }
-            val task = recognizer.process(InputImage.fromBitmap(bitmap, 0))
+    fun blocks(map: InkMap, window: IntArray): List<Block> = startBlocks(map, window)?.await().orEmpty()
+
+    /** Recognition started on a window of a map - see [startBlocks]. */
+    class Pending internal constructor(
+        private val task: com.google.android.gms.tasks.Task<com.google.mlkit.vision.text.Text>,
+        private val bitmap: Bitmap,
+        private val x0: Int,
+        private val y0: Int,
+        private val scale: Float,
+    ) {
+        /** Its blocks of lettering, waited for; null where recognition failed or took too long. */
+        fun await(): List<Block>? = try {
             val result = Tasks.await(task, BLOCK_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-            bitmap.recycle()
             result.textBlocks.mapNotNull { block ->
                 val r = block.boundingBox ?: return@mapNotNull null
                 if (!isLettering(block.text)) return@mapNotNull null
@@ -118,10 +107,46 @@ internal object TextCheck {
                 )
             }
         } catch (e: java.util.concurrent.TimeoutException) {
-            emptyList()
+            null
         } catch (e: Exception) {
             Log.w("TextCheck", "Text recognition failed", e)
-            emptyList()
+            null
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
+    /**
+     * Starts reading the blocks of lettering in [window] (x0, y0, x1, y1) of [map], without
+     * waiting: recognition runs on ML Kit's own thread while the caller gets on with finding
+     * bubbles. Null where it can't run.
+     */
+    fun startBlocks(map: InkMap, window: IntArray): Pending? {
+        if (broken) return null
+        val x0 = window[0].coerceIn(0, map.width)
+        val y0 = window[1].coerceIn(0, map.height)
+        val w = window[2].coerceIn(x0, map.width) - x0
+        val h = window[3].coerceIn(y0, map.height) - y0
+        if (w <= 0 || h <= 0) return null
+        return try {
+            val pixels = IntArray(w * h) { i ->
+                val l = map[x0 + i % w, y0 + i / w]
+                (0xFF shl 24) or (l shl 16) or (l shl 8) or l
+            }
+            val small = Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
+            val scale = min(MAX_SCALE, max(1f, BLOCK_MIN_WIDTH.toFloat() / w))
+            val bitmap = if (scale > 1f) {
+                Bitmap.createScaledBitmap(small, (w * scale).toInt(), (h * scale).toInt(), true).also {
+                    if (it !== small) small.recycle()
+                }
+            } else {
+                small
+            }
+            Pending(recognizer.process(InputImage.fromBitmap(bitmap, 0)), bitmap, x0, y0, scale)
+        } catch (e: Exception) {
+            Log.w("TextCheck", "Text recognition failed", e)
+            broken = true
+            null
         }
     }
 

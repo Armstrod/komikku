@@ -144,13 +144,8 @@ internal object BubbleDetect {
                 if (py < y0) y0 = py
                 if (py > y1) y1 = py
                 if ((luma[i].toInt() and 0xFF) > (luma[brightest].toInt() and 0xFF)) brightest = i
-                for (n in intArrayOf(
-                    if (px > 0) i - 1 else -1,
-                    if (px < w - 1) i + 1 else -1,
-                    if (py > 0) i - w else -1,
-                    if (py < h - 1) i + w else -1,
-                )) {
-                    if (n < 0 || seen[n] || (luma[n].toInt() and 0xFF) < paper) continue
+                neighbors(i, px, py, w, h) { n ->
+                    if (seen[n] || (luma[n].toInt() and 0xFF) < paper) return@neighbors
                     seen[n] = true
                     queue[tail++] = n
                 }
@@ -210,15 +205,17 @@ internal object BubbleDetect {
 
         // Flood the paper, four-connected, giving up once it's too big to be a bubble.
         val maxArea = (MAX_AREA * w * h).toInt()
-        val inside = BooleanArray(w * h)
-        val queue = IntArray(maxArea + 1)
+        val work = scratchFor(w * h)
+        val stamp = ++work.stamp
+        val mark = work.mark
+        val queue = work.queue
         var head = 0
         var tail = 0
         var x0 = seedX
         var x1 = seedX
         var y0 = seedY
         var y1 = seedY
-        inside[seedY * w + seedX] = true
+        mark[seedY * w + seedX] = stamp
         queue[tail++] = seedY * w + seedX
         while (head < tail) {
             val i = queue[head++]
@@ -239,15 +236,10 @@ internal object BubbleDetect {
             if (px > x1) x1 = px
             if (py < y0) y0 = py
             if (py > y1) y1 = py
-            for (n in intArrayOf(
-                if (atLeft) -1 else i - 1,
-                if (atRight) -1 else i + 1,
-                if (py == 0) -1 else i - w,
-                if (py == h - 1) -1 else i + w,
-            )) {
-                if (n < 0 || inside[n] || (map.luma[n].toInt() and 0xFF) < paper) continue
+            neighbors(i, px, py, w, h) { n ->
+                if (mark[n] == stamp || (map.luma[n].toInt() and 0xFF) < paper) return@neighbors
                 if (tail >= maxArea) return null
-                inside[n] = true
+                mark[n] = stamp
                 queue[tail++] = n
             }
         }
@@ -267,7 +259,7 @@ internal object BubbleDetect {
             for (sx in 0 until outW) {
                 val mx = ox + sx
                 val my = oy + sy
-                if (mx in 0 until w && my in 0 until h && inside[my * w + mx]) shape[sy * outW + sx] = true
+                if (mx in 0 until w && my in 0 until h && mark[my * w + mx] == stamp) shape[sy * outW + sx] = true
             }
         }
         val outside = outsideOf(shape, outW, outH)
@@ -472,13 +464,8 @@ internal object BubbleDetect {
                 if (x > x1) x1 = x
                 if (y < y0) y0 = y
                 if (y > y1) y1 = y
-                for (n in intArrayOf(
-                    if (x > 0) i - 1 else -1,
-                    if (x < w - 1) i + 1 else -1,
-                    if (y > 0) i - w else -1,
-                    if (y < h - 1) i + w else -1,
-                )) {
-                    if (n < 0 || paper[n] || outside[n] || seen[n]) continue
+                neighbors(i, x, y, w, h) { n ->
+                    if (paper[n] || outside[n] || seen[n]) return@neighbors
                     seen[n] = true
                     queue[tail++] = n
                 }
@@ -579,13 +566,8 @@ internal object BubbleDetect {
                 val i = queue[head++]
                 val x = i % w
                 val y = i / w
-                for (n in intArrayOf(
-                    if (x > 0) i - 1 else -1,
-                    if (x < w - 1) i + 1 else -1,
-                    if (y > 0) i - w else -1,
-                    if (y < h - 1) i + w else -1,
-                )) {
-                    if (n < 0 || paper[n] || outside[n] || seen[n]) continue
+                neighbors(i, x, y, w, h) { n ->
+                    if (paper[n] || outside[n] || seen[n]) return@neighbors
                     seen[n] = true
                     queue[tail++] = n
                 }
@@ -595,6 +577,29 @@ internal object BubbleDetect {
         return largest
     }
 
+
+    /** Calls [block] with each of pixel [i]'s four neighbours on a [w] x [h] map - no allocation. */
+    private inline fun neighbors(i: Int, x: Int, y: Int, w: Int, h: Int, block: (Int) -> Unit) {
+        if (x > 0) block(i - 1)
+        if (x < w - 1) block(i + 1)
+        if (y > 0) block(i - w)
+        if (y < h - 1) block(i + w)
+    }
+
+    /** Working arrays for [find], reused from one bubble to the next on each thread. */
+    private class Scratch(size: Int) {
+        /** A pixel is in the current flood where it holds the current [stamp] - nothing to clear. */
+        val mark = IntArray(size)
+        val queue = IntArray(size)
+        var stamp = 0
+    }
+
+    private val scratch = ThreadLocal<Scratch>()
+
+    private fun scratchFor(size: Int): Scratch {
+        scratch.get()?.takeIf { it.mark.size == size && it.stamp < Int.MAX_VALUE }?.let { return it }
+        return Scratch(size).also { scratch.set(it) }
+    }
 
     // Reading order.
 
@@ -625,9 +630,15 @@ internal object BubbleDetect {
      * starts at the top right of a panel (top left left to right), and a bubble there sitting
      * a little lower than one further left is still read before it.
      */
-    fun readingOrder(map: InkMap, boxes: List<IntArray>, rightToLeft: Boolean): List<Int> {
+    fun readingOrder(
+        map: InkMap,
+        boxes: List<IntArray>,
+        rightToLeft: Boolean,
+        /** The page's [gutterMap], where already found - it is copied, not changed. */
+        gutter: BooleanArray? = null,
+    ): List<Int> {
         if (boxes.isEmpty()) return emptyList()
-        val panels = panels(map, rightToLeft, boxes)
+        val panels = panels(map, rightToLeft, boxes, gutter)
         val byPanel = boxes.indices.groupBy { i ->
             val b = boxes[i]
             val cx = (b[0] + b[2]) / 2
@@ -694,8 +705,13 @@ internal object BubbleDetect {
      * no straight line runs clear across it. Bands read top to bottom, panels across a band
      * right to left where [rightToLeft]. A page with no gutter across it is one piece.
      */
-    fun panels(map: InkMap, rightToLeft: Boolean, bubbles: List<IntArray> = emptyList()): List<Piece> {
-        val gutter = gutters(map)
+    fun panels(
+        map: InkMap,
+        rightToLeft: Boolean,
+        bubbles: List<IntArray> = emptyList(),
+        gutterMap: BooleanArray? = null,
+    ): List<Piece> {
+        val gutter = gutterMap?.copyOf() ?: gutters(map)
         // Bubbles often straddle the border between two panels: across them is gutter too.
         val w = map.width
         for (b in bubbles) {
@@ -715,50 +731,69 @@ internal object BubbleDetect {
     private const val MAX_PANEL = 0.5f
 
     /**
-     * The panel round [box] (x0, y0, x1, y1): what its middle reaches without crossing a
-     * [gutter], by its bounds - a bubble reaches the panel's artwork through its own outline.
-     * Null where that is most of the page - no panel borders to stop it.
+     * The panel round each of [boxes] (x0, y0, x1, y1): what its middle reaches without
+     * crossing a [gutter], by its bounds - a bubble reaches the panel's artwork through its own
+     * outline. Null where that is most of the page - no panel borders to stop it. Each region
+     * is flooded once, however many bubbles share it.
      */
-    fun panelAround(map: InkMap, gutter: BooleanArray, box: IntArray): IntArray? {
+    fun panelsAround(map: InkMap, gutter: BooleanArray, boxes: List<IntArray>): List<IntArray?> {
         val w = map.width
         val h = map.height
-        val x = ((box[0] + box[2]) / 2).coerceIn(0, w - 1)
-        val y = ((box[1] + box[3]) / 2).coerceIn(0, h - 1)
-        val start = y * w + x
-        if (gutter[start]) return null
-        val inside = BooleanArray(w * h)
+        // 0 unvisited; -1 part of a region too big to be a panel; else 1 + its index in [bounds].
+        val label = IntArray(w * h)
+        val bounds = ArrayList<IntArray>()
         val queue = IntArray(w * h)
-        var head = 0
-        var tail = 0
-        inside[start] = true
-        queue[tail++] = start
-        var x0 = x
-        var x1 = x
-        var y0 = y
-        var y1 = y
         val limit = (MAX_PANEL * w * h).toInt()
-        while (head < tail) {
-            val i = queue[head++]
-            val px = i % w
-            val py = i / w
-            if (px < x0) x0 = px
-            if (px > x1) x1 = px
-            if (py < y0) y0 = py
-            if (py > y1) y1 = py
-            for (n in intArrayOf(
-                if (px > 0) i - 1 else -1,
-                if (px < w - 1) i + 1 else -1,
-                if (py > 0) i - w else -1,
-                if (py < h - 1) i + w else -1,
-            )) {
-                if (n < 0 || inside[n] || gutter[n]) continue
-                if (tail >= limit) return null
-                inside[n] = true
-                queue[tail++] = n
+        fun region(start: Int): IntArray? {
+            label[start].let { if (it > 0) return bounds[it - 1] else if (it < 0) return null }
+            val id = bounds.size + 1
+            var head = 0
+            var tail = 0
+            label[start] = id
+            queue[tail++] = start
+            var x0 = start % w
+            var x1 = x0
+            var y0 = start / w
+            var y1 = y0
+            var big = false
+            while (head < tail) {
+                val i = queue[head++]
+                val px = i % w
+                val py = i / w
+                if (px < x0) x0 = px
+                if (px > x1) x1 = px
+                if (py < y0) y0 = py
+                if (py > y1) y1 = py
+                neighbors(i, px, py, w, h) { n ->
+                    if (label[n] != 0 || gutter[n] || tail >= queue.size) return@neighbors
+                    label[n] = id
+                    queue[tail++] = n
+                }
+                if (tail > limit) {
+                    big = true
+                    break
+                }
+            }
+            if (big || (x1 - x0 + 1).toLong() * (y1 - y0 + 1) > MAX_PANEL * w * h) {
+                for (k in 0 until tail) label[queue[k]] = -1
+                return null
+            }
+            val r = intArrayOf(x0, y0, x1 + 1, y1 + 1)
+            bounds += r
+            return r
+        }
+        return boxes.map { box ->
+            val x = ((box[0] + box[2]) / 2).coerceIn(0, w - 1)
+            val y = ((box[1] + box[3]) / 2).coerceIn(0, h - 1)
+            val start = y * w + x
+            if (gutter[start]) {
+                null
+            } else {
+                region(start)?.let {
+                    intArrayOf(min(it[0], box[0]), min(it[1], box[1]), max(it[2], box[2]), max(it[3], box[3]))
+                }
             }
         }
-        if ((x1 - x0 + 1).toLong() * (y1 - y0 + 1) > MAX_PANEL * w * h) return null
-        return intArrayOf(min(x0, box[0]), min(y0, box[1]), max(x1 + 1, box[2]), max(y1 + 1, box[3]))
     }
 
     /** The paper reachable from the page's edges, one flag per map pixel - its gutters. */
@@ -874,44 +909,52 @@ internal object BubbleDetect {
             fun line() = Cut(horizontal, uFrom, mid, rise.toFloat() / length, 0)
         }
 
-        // Lines leave the piece rarely, so a line with more art than this fails early.
-        val maxMisses = ((1f - CLEAR_LINE) * length / uStep).toInt() + 1
-
-        fun clear(v0: Int, rise: Int): Boolean {
-            var inside = 0
-            var paper = 0
-            var u = uFrom
-            while (u < uTo) {
-                val v = v0 + rise * (u - uFrom) / length
-                if (v in vFrom until vTo) {
-                    val x = if (horizontal) u else v
-                    val y = if (horizontal) v else u
-                    if (piece.contains(x, y)) {
-                        inside++
-                        if (gutter[y * w + x]) paper++ else if (inside - paper > maxMisses) return false
-                    }
-                }
-                u += uStep
-            }
-            return inside * uStep >= length / 2 && paper >= CLEAR_LINE * inside
+        // Which of the piece's bounds are in it - its cuts tested once, not per line.
+        val bw = piece.x1 - piece.x0
+        val bh = piece.y1 - piece.y0
+        val inPiece = if (piece.cuts.isEmpty()) {
+            null
+        } else {
+            BooleanArray(bw * bh) { piece.contains(piece.x0 + it % bw, piece.y0 + it / bw) }
         }
 
+        // Every line at one slant counted at once: walking along the piece, each sampled
+        // column adds its pixels to the line through them - which line, by its start, shifts
+        // with the slant. Then a line is clear where nearly all of it in the piece is paper.
         val gaps = ArrayList<Gap>()
         var rise = -maxRise
         while (rise <= maxRise) {
             // A slanted line starts above (or before) the piece to reach all of it.
             val from = vFrom - max(0, rise)
             val to = vTo - min(0, rise)
-            var v = from
-            while (v < to) {
-                if (!clear(v, rise)) {
-                    v++
+            val inside = IntArray(to - from)
+            val paper = IntArray(to - from)
+            var u = uFrom
+            while (u < uTo) {
+                val shift = rise * (u - uFrom) / length
+                for (v in vFrom until vTo) {
+                    val x = if (horizontal) u else v
+                    val y = if (horizontal) v else u
+                    if (inPiece != null && !inPiece[(y - piece.y0) * bw + (x - piece.x0)]) continue
+                    // The line through (u, v) at this slant starts at v - shift.
+                    val k = v - shift - from
+                    if (k < 0 || k >= inside.size) continue
+                    inside[k]++
+                    if (gutter[y * w + x]) paper[k]++
+                }
+                u += uStep
+            }
+            fun clear(k: Int) = inside[k] * uStep >= length / 2 && paper[k] >= CLEAR_LINE * inside[k]
+            var k = 0
+            while (k < inside.size) {
+                if (!clear(k)) {
+                    k++
                     continue
                 }
-                val start = v
-                while (v < to && clear(v, rise)) v++
+                val start = k
+                while (k < inside.size && clear(k)) k++
                 // A margin at either end splits nothing.
-                val g = Gap(start, v, rise)
+                val g = Gap(start + from, k + from, rise)
                 val lo = min(g.line().at(uFrom), g.line().at(uTo - 1))
                 val hi = max(g.line().at(uFrom), g.line().at(uTo - 1))
                 if (g.width >= minGap && lo > vFrom + minGap && hi < vTo - minGap) gaps += g

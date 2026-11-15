@@ -1025,7 +1025,7 @@ open class WebGpuViewer(
                 val dock = if (guidedActive()) pager.state.dockRegion() else null
                 if (dock != null && offset.y >= dock[0]) {
                     // The room below the page steps through its bubbles.
-                    guidedStep(1)
+                    dockStep(offset)
                 } else {
                     // Docked, the page itself turns pages, past any bubbles left on it.
                     navigateTap(offset, guided = dock == null)
@@ -1035,7 +1035,7 @@ open class WebGpuViewer(
             onGuidedTap = { offset ->
                 val dock = pager.state.dockRegion()
                 if (dock != null) {
-                    if (offset.y >= dock[0]) guidedStep(1) else navigateTap(offset, guided = false)
+                    if (offset.y >= dock[0]) dockStep(offset) else navigateTap(offset, guided = false)
                 } else {
                     // Over the page: back a bubble from the back zone, on a bubble anywhere else.
                     when (config.navigator.getAction(PointF(offset.x, offset.y))) {
@@ -2115,6 +2115,15 @@ open class WebGpuViewer(
         }
     }
 
+    /**
+     * A tap in the room below the page: back a bubble from its back edge - the right reading
+     * right to left, as paging back is - and on a bubble anywhere else.
+     */
+    private fun dockStep(offset: Offset) {
+        val back = if (pager.state.isReversed) offset.x > 1f - DOCK_BACK_ZONE else offset.x < DOCK_BACK_ZONE
+        guidedStep(if (back) -1 else 1)
+    }
+
     /** [navigateSpread], or a [guidedStep] where bubbles come first. */
     private fun navigateOrStep(direction: Int) {
         if (guidedNavigation && guidedActive()) guidedStep(direction) else navigateSpread(direction)
@@ -2255,3 +2264,6 @@ open class WebGpuViewer(
         return false
     }
 }
+
+/** How far in from its back edge a tap below the page steps back a bubble. */
+private const val DOCK_BACK_ZONE = 0.33f
