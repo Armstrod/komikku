@@ -55,7 +55,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -160,65 +159,6 @@ internal class BubbleOverlay(
 }
 
 internal object BubbleZoom {
-    /** A bubble is at least this bright where it was tapped, out of 255. */
-    private const val MIN_SEED_LUMA = 165
-
-    /** What counts as the bubble's own paper, relative to the brightness where it was tapped. */
-    private const val PAPER_FRACTION = 0.82f
-
-    /** How far a tap on the lettering looks for the paper around it, in map pixels. */
-    private const val SEED_RADIUS = 10
-
-    /** Largest share of the page a bubble may take - past this it's a white panel, not a bubble. */
-    private const val MAX_AREA = 0.12f
-
-    /** Share of a bubble's area its lettering takes, at least and at most. */
-    private const val MIN_INK = 0.015f
-    private const val MAX_INK = 0.45f
-
-    /** Largest single mark inside a bubble, as a share of it - a letter or a line of them. */
-    private const val MAX_MARK = 0.2f
-
-    /**
-     * How round a bubble is at least, measured once [CLOSE] has smoothed it: 1 for a circle,
-     * about 0.65 with a long tail, under 0.4 for a spiky radio bubble or two joined by a neck.
-     * Lettering laid over artwork, flooded through its white halo, stays near 0.2.
-     */
-    private const val MIN_COMPACTNESS = 0.33f
-
-    /** Share of its bounds a bubble fills at least - two joined by a neck fill about a third. */
-    private const val MIN_FILL = 0.3f
-
-    /**
-     * Map pixels the shape is closed over before it is measured or cut out: comic lettering
-     * often runs into the outline, and each letter that touches it would otherwise bite a notch
-     * out of the bubble - out of its outline length, and out of what is enlarged.
-     */
-    private const val CLOSE = 3
-
-    /** Map pixels added around the bubble, so its own outline comes with it. */
-    private const val OUTLINE = 2
-
-    /** What [lettered] asks of a bubble found for the sequence: marks, how alike, and in a row. */
-    private const val MIN_LETTERS = 3
-    private const val LETTER_UNIFORMITY = 0.5f
-
-    /**
-     * A tapped bubble is checked the same way, a little more leniently - a finger chose it, and
-     * a short "NO!" is still worth opening - but no longer not at all: an outlined helmet or
-     * badge has no line of lettering in it.
-     */
-    private const val TAP_LETTERS = 2
-
-    /** Letters are small next to their bubble: at most this share of its height (or width). */
-    private const val MAX_LETTER_SIZE = 0.55f
-
-    /** A line of lettering runs across a fair part of its bubble, letters close together. */
-    private const val MIN_LINE_SPAN = 0.22f
-    private const val MAX_LETTER_GAP = 3f
-
-    /** Room around the bubble's bounds for [CLOSE] and [OUTLINE] to grow into. */
-    private const val PAD = 4
 
     /** How far the bubble grows at most, and at least for it to be worth opening. */
     private const val MAX_ZOOM = 3.2f
@@ -257,21 +197,22 @@ internal object BubbleZoom {
         // In a spread, a bubble cut by the seam is still a bubble: the side's inner edge bounds
         // it instead of disqualifying it.
         val openEdge = when {
-            page !is ImagePage.ImageSpread -> NO_EDGE
-            hit.offsetX < 0f -> RIGHT_EDGE
-            else -> LEFT_EDGE
+            page !is ImagePage.ImageSpread -> BubbleDetect.NO_EDGE
+            hit.offsetX < 0f -> BubbleDetect.RIGHT_EDGE
+            else -> BubbleDetect.LEFT_EDGE
         }
         val map = image.inkMap ?: return null
 
         val u = (tapX - imageRect[0]) / (imageRect[2] - imageRect[0])
         val v = (tapY - imageRect[1]) / (imageRect[3] - imageRect[1])
-        val found = find(
+        val found = BubbleDetect.find(
             map,
             (u * map.width).toInt().coerceIn(0, map.width - 1),
             (v * map.height).toInt().coerceIn(0, map.height - 1),
             openEdge,
-            letters = TAP_LETTERS,
+            letters = BubbleDetect.TAP_LETTERS,
         ) ?: return null
+        if (!TextCheck.hasText(map, found)) return null
 
         return overlay(page, screenWidth, screenHeight, image, map, imageRect, found, dock)
     }
@@ -291,15 +232,7 @@ internal object BubbleZoom {
         /** Where bubbles open instead of in place - see [overlay]. */
         dock: FloatArray? = null,
     ): List<BubbleOverlay> {
-        class Placed(
-            val overlay: BubbleOverlay,
-            val panel: Int,
-            val top: Int,
-            val bottom: Int,
-            val centerX: Int,
-        )
-
-        val pages = ArrayList<List<Placed>>()
+        val pages = ArrayList<List<BubbleOverlay>>()
         page.forEachImage { image, offsetX, imageScale ->
             val map = image.inkMap ?: return@forEachImage
             val placeX = (page.x + offsetX / screenWidth + WebGpuRenderer.offsetX) / imageScale -
@@ -313,55 +246,42 @@ internal object BubbleZoom {
                 page.scale * imageScale,
             )
             val openEdge = when {
-                page !is ImagePage.ImageSpread -> NO_EDGE
-                offsetX < 0f -> RIGHT_EDGE
-                else -> LEFT_EDGE
+                page !is ImagePage.ImageSpread -> BubbleDetect.NO_EDGE
+                offsetX < 0f -> BubbleDetect.RIGHT_EDGE
+                else -> BubbleDetect.LEFT_EDGE
             }
-            val panels = PanelZoom.panelOrder(map, rightToLeft)
-            val placed = ArrayList<Placed>()
-            for (found in findAll(map, openEdge)) {
+            val placed = ArrayList<BubbleOverlay>()
+            val boxes = ArrayList<IntArray>()
+            for (found in BubbleDetect.findAll(map, openEdge)) {
                 val overlay = overlay(page, screenWidth, screenHeight, image, map, imageRect, found, dock) ?: continue
-                val cx = found.x0 + found.width / 2
-                val cy = found.y0 + found.height / 2
-                val panel = panels.indexOfFirst { cx >= it[0] && cx < it[2] && cy >= it[1] && cy < it[3] }
-                placed += Placed(overlay, if (panel < 0) panels.size else panel, found.y0, found.y0 + found.height, cx)
+                // Off screen - the far half of a wide page zoomed to half its width - it can't
+                // be read where it sits.
+                if (overlay.centerX !in 0f..1f || overlay.centerY !in 0f..1f) continue
+                // Read last, being the slowest: hatching or screentone can pass the shape tests.
+                if (!TextCheck.hasText(map, found)) continue
+                placed += overlay
+                boxes += intArrayOf(found.x0, found.y0, found.x0 + found.width, found.y0 + found.height)
             }
             if (include != null && include.centerX >= imageRect[0] && include.centerX < imageRect[2] &&
                 include.centerY >= imageRect[1] && include.centerY < imageRect[3] &&
-                placed.none { it.overlay.rect.contentEquals(include.rect) }
+                placed.none { it.rect.contentEquals(include.rect) }
             ) {
                 // Back from screen to map pixels, as the others were placed.
                 val sx = map.width / (imageRect[2] - imageRect[0])
                 val sy = map.height / (imageRect[3] - imageRect[1])
-                val cx = ((include.centerX - imageRect[0]) * sx).toInt()
-                val cy = ((include.centerY - imageRect[1]) * sy).toInt()
-                val top = ((include.rect[1] - imageRect[1]) * sy).toInt()
-                val bottom = ((include.rect[3] - imageRect[1]) * sy).toInt()
-                val panel = panels.indexOfFirst { cx >= it[0] && cx < it[2] && cy >= it[1] && cy < it[3] }
-                placed += Placed(include, if (panel < 0) panels.size else panel, top, bottom, cx)
+                placed += include
+                boxes += intArrayOf(
+                    ((include.rect[0] - imageRect[0]) * sx).toInt(),
+                    ((include.rect[1] - imageRect[1]) * sy).toInt(),
+                    ((include.rect[2] - imageRect[0]) * sx).toInt(),
+                    ((include.rect[3] - imageRect[1]) * sy).toInt(),
+                )
             }
-            // Within a panel: rows top to bottom, each row in reading direction. Two bubbles
-            // share a row when their vertical spans overlap by most of the shorter one.
-            placed.sortBy { it.top }
-            val rows = ArrayList<MutableList<Placed>>()
-            for (p in placed) {
-                val row = rows.lastOrNull()
-                val last = row?.lastOrNull()
-                if (row != null && last != null &&
-                    p.top < last.bottom - 0.4f * min(last.bottom - last.top, p.bottom - p.top)
-                ) {
-                    row += p
-                } else {
-                    rows += mutableListOf(p)
-                }
-            }
-            for (row in rows) if (rightToLeft) row.sortByDescending { it.centerX } else row.sortBy { it.centerX }
-            // A stable sort by panel keeps the row order within each panel.
-            pages += rows.flatten().sortedBy { it.panel }
+            pages += BubbleDetect.readingOrder(map, boxes, rightToLeft).map { placed[it] }
         }
         // forEachImage walks a spread left side first; a right-to-left book reads the right side first.
         if (rightToLeft) pages.reverse()
-        return pages.flatten().map { it.overlay }
+        return pages.flatten()
     }
 
     /** As [detect]'s tail: the bubble [found] on [image], placed at [imageRect], as an overlay. */
@@ -372,7 +292,7 @@ internal object BubbleZoom {
         image: Image,
         map: InkMap,
         imageRect: FloatArray,
-        found: Found,
+        found: BubbleDetect.Found,
         /**
          * The band of screen below the page, top and bottom normalised, where a bubble opens
          * enlarged instead of over the page - the page stays readable above it. Null, or a
@@ -434,70 +354,6 @@ internal object BubbleZoom {
         )
     }
 
-    /** A bubble found on an [InkMap]: its bounds there, and its shape within them. */
-    class Found(val x0: Int, val y0: Int, val width: Int, val height: Int, val mask: ByteArray)
-
-    /**
-     * Every bubble on [map]: each patch of paper that doesn't reach the page's edge is tried as
-     * [find]'s seed, from its brightest pixel, so the same tests decide what is a bubble.
-     */
-    fun findAll(map: InkMap, openEdge: Int = NO_EDGE): List<Found> {
-        val w = map.width
-        val h = map.height
-        val luma = map.luma
-        val paper = (MIN_SEED_LUMA * PAPER_FRACTION).toInt()
-        val seen = BooleanArray(w * h)
-        val queue = IntArray(w * h)
-        val maxArea = (MAX_AREA * w * h).toInt()
-        val out = ArrayList<Found>()
-        for (start in 0 until w * h) {
-            if (seen[start] || (luma[start].toInt() and 0xFF) < paper) continue
-            // One patch of paper, four-connected.
-            var head = 0
-            var tail = 0
-            seen[start] = true
-            queue[tail++] = start
-            var brightest = start
-            var edge = false
-            var x0 = w
-            var x1 = -1
-            var y0 = h
-            var y1 = -1
-            while (head < tail) {
-                val i = queue[head++]
-                val px = i % w
-                val py = i / w
-                if (px < x0) x0 = px
-                if (px > x1) x1 = px
-                if (py < y0) y0 = py
-                if (py > y1) y1 = py
-                if (py == 0 || py == h - 1 || (px == 0 && openEdge != LEFT_EDGE) || (px == w - 1 && openEdge != RIGHT_EDGE)) edge = true
-                if ((luma[i].toInt() and 0xFF) > (luma[brightest].toInt() and 0xFF)) brightest = i
-                for (n in intArrayOf(
-                    if (px > 0) i - 1 else -1,
-                    if (px < w - 1) i + 1 else -1,
-                    if (py > 0) i - w else -1,
-                    if (py < h - 1) i + w else -1,
-                )) {
-                    if (n < 0 || seen[n] || (luma[n].toInt() and 0xFF) < paper) continue
-                    seen[n] = true
-                    queue[tail++] = n
-                }
-            }
-            if (edge || tail > maxArea || tail < 200) continue
-            if (x1 - x0 + 1 < 0.03f * w || y1 - y0 + 1 < 0.02f * h) continue
-            val found = find(map, brightest % w, brightest / w, openEdge, letters = MIN_LETTERS) ?: continue
-            // The same bubble can surface twice where the adaptive threshold splits a patch.
-            val duplicate = out.any { other ->
-                val ix = max(0, min(found.x0 + found.width, other.x0 + other.width) - max(found.x0, other.x0))
-                val iy = max(0, min(found.y0 + found.height, other.y0 + other.height) - max(found.y0, other.y0))
-                ix * iy > 0.5f * min(found.width * found.height, other.width * other.height)
-            }
-            if (!duplicate) out += found
-        }
-        return out
-    }
-
     /** One of [page]'s images and where it sits on screen - see [imageAt]. */
     class Hit(val image: Image, val rect: FloatArray, val offsetX: Float)
 
@@ -547,365 +403,6 @@ internal object BubbleZoom {
             bottom = max(bottom ?: rect[3], rect[3])
         }
         return bottom
-    }
-
-    /** Which side of the map, if any, a bubble may run off - the seam side of a spread's page. */
-    private const val NO_EDGE = 0
-    private const val LEFT_EDGE = 1
-    private const val RIGHT_EDGE = 2
-
-    /**
-     * The speech bubble around map pixel ([x], [y]): the bright paper there, flood-filled up to the
-     * dark outline that closes it, its lettering filled in, its outline added back. Null for
-     * anything that doesn't look like a bubble - open to the page's edge, too big, too thin, or
-     * with nothing written in it.
-     */
-    fun find(map: InkMap, x: Int, y: Int, openEdge: Int = NO_EDGE, letters: Int = 0): Found? {
-        val w = map.width
-        val h = map.height
-
-        // A tap on the lettering starts from the brightest paper next to it.
-        var seedX = x
-        var seedY = y
-        var seedLuma = map[x, y]
-        if (seedLuma < MIN_SEED_LUMA) {
-            for (dy in -SEED_RADIUS..SEED_RADIUS) {
-                for (dx in -SEED_RADIUS..SEED_RADIUS) {
-                    val px = x + dx
-                    val py = y + dy
-                    if (px !in 0 until w || py !in 0 until h) continue
-                    val l = map[px, py]
-                    if (l > seedLuma) {
-                        seedLuma = l
-                        seedX = px
-                        seedY = py
-                    }
-                }
-            }
-            if (seedLuma < MIN_SEED_LUMA) return null
-        }
-        val paper = (seedLuma * PAPER_FRACTION).toInt()
-
-        // Flood the paper, four-connected, giving up once it's too big to be a bubble.
-        val maxArea = (MAX_AREA * w * h).toInt()
-        val inside = BooleanArray(w * h)
-        val queue = IntArray(maxArea + 1)
-        var head = 0
-        var tail = 0
-        var x0 = seedX
-        var x1 = seedX
-        var y0 = seedY
-        var y1 = seedY
-        inside[seedY * w + seedX] = true
-        queue[tail++] = seedY * w + seedX
-        while (head < tail) {
-            val i = queue[head++]
-            val px = i % w
-            val py = i / w
-            // Open to the page's edge: a gutter or a borderless panel, not a bubble - except at
-            // the open edge, which simply bounds it.
-            val atLeft = px == 0
-            val atRight = px == w - 1
-            if (py == 0 || py == h - 1) return null
-            if ((atLeft && openEdge != LEFT_EDGE) || (atRight && openEdge != RIGHT_EDGE)) return null
-            if (px < x0) x0 = px
-            if (px > x1) x1 = px
-            if (py < y0) y0 = py
-            if (py > y1) y1 = py
-            for (n in intArrayOf(if (atLeft) -1 else i - 1, if (atRight) -1 else i + 1, i - w, i + w)) {
-                if (n < 0 || inside[n] || (map.luma[n].toInt() and 0xFF) < paper) continue
-                if (tail >= maxArea) return null
-                inside[n] = true
-                queue[tail++] = n
-            }
-        }
-        val paperArea = tail
-
-        val bw = x1 - x0 + 1
-        val bh = y1 - y0 + 1
-        if (bw < 0.03f * w || bh < 0.02f * h || paperArea < 200) return null
-
-        // Fill the lettering in: everything in the bounds the outside can't reach is bubble.
-        val outW = bw + 2 * PAD
-        val outH = bh + 2 * PAD
-        val ox = x0 - PAD
-        val oy = y0 - PAD
-        val shape = BooleanArray(outW * outH)
-        for (sy in 0 until outH) {
-            for (sx in 0 until outW) {
-                val mx = ox + sx
-                val my = oy + sy
-                if (mx in 0 until w && my in 0 until h && inside[my * w + mx]) shape[sy * outW + sx] = true
-            }
-        }
-        val outside = outsideOf(shape, outW, outH)
-        var filledArea = 0
-        for (i in shape.indices) if (!outside[i]) filledArea++
-
-        // Round enough to be a bubble, small enough not to be a panel, and with something
-        // written in it - but only lettering, which is in small pieces. A panel's artwork is
-        // dense, or has a large piece.
-        if (filledArea < MIN_FILL * bw * bh || filledArea > maxArea) return null
-        val ink = (filledArea - paperArea).toFloat() / filledArea
-        if (ink < MIN_INK || ink > MAX_INK) return null
-        if (largestMark(shape, outside, outW, outH) > MAX_MARK * filledArea) return null
-        // What is written in it has to look like lettering, not a face, a glove or the rivets on
-        // an outlined piece of armour - for the sequence, which tries every patch of paper, and
-        // for a tap as well.
-        if (letters > 0 && !lettered(shape, outside, outW, outH, letters)) return null
-
-        // Closed over the notches lettering bites out of it, then filled again.
-        val solid = BooleanArray(outW * outH) { !outside[it] }
-        val closed = grow(grow(solid, outW, outH, CLOSE, dilate = true), outW, outH, CLOSE, dilate = false)
-        val closedOutside = outsideOf(closed, outW, outH)
-
-        // Compact, as a bubble or a caption box is - not the ragged white halo of lettering laid
-        // over artwork, which floods into a shape all edge. Counted edges overshoot a smooth
-        // outline's length by about 4/pi, hence the correction; a circle comes out near 1.
-        var closedArea = 0
-        var edges = 0
-        for (sy in 0 until outH) {
-            for (sx in 0 until outW) {
-                val i = sy * outW + sx
-                if (!closedOutside[i]) closedArea++
-                if (sx > 0 && closedOutside[i] != closedOutside[i - 1]) edges++
-                if (sy > 0 && closedOutside[i] != closedOutside[i - outW]) edges++
-            }
-        }
-        val compactness = 64f * closedArea / (Math.PI.toFloat() * edges * edges)
-        if (compactness < MIN_COMPACTNESS) return null
-
-        // Grown by the outline.
-        val grown = grow(BooleanArray(outW * outH) { !closedOutside[it] }, outW, outH, OUTLINE, dilate = true)
-        val mask = ByteArray(outW * outH) { if (grown[it]) 0xFF.toByte() else 0 }
-        return Found(ox, oy, outW, outH, soften(mask, outW, outH))
-    }
-
-    /** What of a [w] x [h] frame can be reached from its border without crossing [shape]. */
-    private fun outsideOf(shape: BooleanArray, w: Int, h: Int): BooleanArray {
-        val outside = BooleanArray(w * h)
-        val queue = IntArray(w * h)
-        var head = 0
-        var tail = 0
-        fun reach(i: Int) {
-            if (!shape[i] && !outside[i]) {
-                outside[i] = true
-                queue[tail++] = i
-            }
-        }
-        for (x in 0 until w) {
-            reach(x)
-            reach((h - 1) * w + x)
-        }
-        for (y in 0 until h) {
-            reach(y * w)
-            reach(y * w + w - 1)
-        }
-        while (head < tail) {
-            val i = queue[head++]
-            val x = i % w
-            val y = i / w
-            if (x > 0) reach(i - 1)
-            if (x < w - 1) reach(i + 1)
-            if (y > 0) reach(i - w)
-            if (y < h - 1) reach(i + w)
-        }
-        return outside
-    }
-
-    /**
-     * [shape] dilated or eroded by a square of radius [r], one axis at a time. Past the frame
-     * counts as empty, which [PAD] keeps clear of the shape.
-     */
-    private fun grow(shape: BooleanArray, w: Int, h: Int, r: Int, dilate: Boolean): BooleanArray {
-        fun pass(src: BooleanArray, horizontal: Boolean): BooleanArray = BooleanArray(w * h) { i ->
-            val x = i % w
-            val y = i / w
-            var any = false
-            var all = true
-            for (d in -r..r) {
-                val v = if (horizontal) {
-                    val tx = x + d
-                    tx in 0 until w && src[y * w + tx]
-                } else {
-                    val ty = y + d
-                    ty in 0 until h && src[ty * w + x]
-                }
-                if (v) any = true else all = false
-            }
-            if (dilate) any else all
-        }
-        return pass(pass(shape, horizontal = true), horizontal = false)
-    }
-
-    /**
-     * Blurs the shape's hard map-pixel steps into a smooth field, so the edge drawn at its
-     * midpoint is a curve rather than a staircase once the bubble is enlarged. Two box passes
-     * each way, radius 2 - near enough a Gaussian.
-     */
-    private fun soften(mask: ByteArray, w: Int, h: Int): ByteArray {
-        var src = FloatArray(mask.size) { (mask[it].toInt() and 0xFF) / 255f }
-        val radius = 2
-        repeat(2) {
-            val horizontal = FloatArray(src.size)
-            for (y in 0 until h) {
-                for (x in 0 until w) {
-                    var sum = 0f
-                    for (d in -radius..radius) sum += src[y * w + (x + d).coerceIn(0, w - 1)]
-                    horizontal[y * w + x] = sum / (2 * radius + 1)
-                }
-            }
-            val vertical = FloatArray(src.size)
-            for (y in 0 until h) {
-                for (x in 0 until w) {
-                    var sum = 0f
-                    for (d in -radius..radius) sum += horizontal[(y + d).coerceIn(0, h - 1) * w + x]
-                    vertical[y * w + x] = sum / (2 * radius + 1)
-                }
-            }
-            src = vertical
-        }
-        return ByteArray(src.size) { (src[it] * 255f + 0.5f).toInt().coerceIn(0, 255).toByte() }
-    }
-
-    /**
-     * Whether the marks inside the bubble read as lettering: at least [minLetters] of them about
-     * one size, small next to the bubble, with [minLetters] or more side by side in a line that
-     * runs across a fair part of it, letters close together. Lines may run across (most
-     * lettering) or down (Japanese). A face has an eye or two, a glove a few long strokes, an
-     * outlined badge a large emblem; none of them is a line of small, evenly spaced marks.
-     */
-    private fun lettered(paper: BooleanArray, outside: BooleanArray, w: Int, h: Int, minLetters: Int): Boolean {
-        val seen = BooleanArray(w * h)
-        val queue = IntArray(w * h)
-        val marks = ArrayList<IntArray>()
-        // The bubble's own extent, to judge the marks against.
-        var bx0 = w
-        var bx1 = -1
-        var by0 = h
-        var by1 = -1
-        for (i in paper.indices) {
-            if (outside[i]) continue
-            val x = i % w
-            val y = i / w
-            if (x < bx0) bx0 = x
-            if (x > bx1) bx1 = x
-            if (y < by0) by0 = y
-            if (y > by1) by1 = y
-        }
-        if (bx1 < bx0 || by1 < by0) return false
-        val bubbleW = bx1 - bx0 + 1
-        val bubbleH = by1 - by0 + 1
-        for (start in paper.indices) {
-            if (paper[start] || outside[start] || seen[start]) continue
-            var head = 0
-            var tail = 0
-            seen[start] = true
-            queue[tail++] = start
-            var x0 = w
-            var x1 = -1
-            var y0 = h
-            var y1 = -1
-            while (head < tail) {
-                val i = queue[head++]
-                val x = i % w
-                val y = i / w
-                if (x < x0) x0 = x
-                if (x > x1) x1 = x
-                if (y < y0) y0 = y
-                if (y > y1) y1 = y
-                for (n in intArrayOf(
-                    if (x > 0) i - 1 else -1,
-                    if (x < w - 1) i + 1 else -1,
-                    if (y > 0) i - w else -1,
-                    if (y < h - 1) i + w else -1,
-                )) {
-                    if (n < 0 || paper[n] || outside[n] || seen[n]) continue
-                    seen[n] = true
-                    queue[tail++] = n
-                }
-            }
-            // A speck is not a letter.
-            if (tail < 3) continue
-            marks += intArrayOf(x0, y0, x1, y1)
-        }
-        if (marks.size < minLetters) return false
-        return lines(marks, across = true, bubbleW, bubbleH, minLetters) ||
-            lines(marks, across = false, bubbleW, bubbleH, minLetters)
-    }
-
-    /**
-     * Whether [marks] (x0, y0, x1, y1 each) hold a line of lettering running [across] the bubble -
-     * else running down it. "Size" is a mark's extent across the line, "position" along it.
-     */
-    private fun lines(marks: List<IntArray>, across: Boolean, bubbleW: Int, bubbleH: Int, minLetters: Int): Boolean {
-        fun size(m: IntArray) = if (across) m[3] - m[1] + 1 else m[2] - m[0] + 1
-        fun center(m: IntArray) = if (across) (m[1] + m[3]) * 0.5f else (m[0] + m[2]) * 0.5f
-        fun start(m: IntArray) = if (across) m[0] else m[1]
-        fun end(m: IntArray) = if (across) m[2] else m[3]
-        val bubbleCross = if (across) bubbleH else bubbleW
-        val bubbleAlong = if (across) bubbleW else bubbleH
-
-        val median = marks.map { size(it) }.sorted()[marks.size / 2].toFloat()
-        if (median < 2f || median > MAX_LETTER_SIZE * bubbleCross) return false
-        val alike = marks.filter { size(it) >= 0.5f * median && size(it) <= 1.7f * median }
-        if (alike.size < minLetters || alike.size < LETTER_UNIFORMITY * marks.size) return false
-
-        // Lines: marks whose centres sit within most of a letter's size of each other.
-        val sorted = alike.sortedBy { center(it) }
-        var line = ArrayList<IntArray>()
-        var sum = 0f
-        fun good(l: List<IntArray>): Boolean {
-            if (l.size < minLetters) return false
-            val ordered = l.sortedBy { start(it) }
-            val span = end(ordered.last()) - start(ordered.first()) + 1
-            if (span < MIN_LINE_SPAN * bubbleAlong) return false
-            // Letters sit close; a few marks scattered across a shape do not.
-            var gaps = 0f
-            for (k in 1 until ordered.size) gaps += max(0, start(ordered[k]) - end(ordered[k - 1]))
-            return gaps / (ordered.size - 1) <= MAX_LETTER_GAP * median
-        }
-        for (m in sorted) {
-            if (line.isNotEmpty() && abs(center(m) - sum / line.size) > 0.6f * median) {
-                if (good(line)) return true
-                line = ArrayList()
-                sum = 0f
-            }
-            line += m
-            sum += center(m)
-        }
-        return good(line)
-    }
-
-    /** Size of the largest connected mark inside the bubble: filled in, but not its paper. */
-    private fun largestMark(paper: BooleanArray, outside: BooleanArray, w: Int, h: Int): Int {
-        val seen = BooleanArray(w * h)
-        val queue = IntArray(w * h)
-        var largest = 0
-        for (start in paper.indices) {
-            if (paper[start] || outside[start] || seen[start]) continue
-            var head = 0
-            var tail = 0
-            seen[start] = true
-            queue[tail++] = start
-            while (head < tail) {
-                val i = queue[head++]
-                val x = i % w
-                val y = i / w
-                for (n in intArrayOf(
-                    if (x > 0) i - 1 else -1,
-                    if (x < w - 1) i + 1 else -1,
-                    if (y > 0) i - w else -1,
-                    if (y < h - 1) i + w else -1,
-                )) {
-                    if (n < 0 || paper[n] || outside[n] || seen[n]) continue
-                    seen[n] = true
-                    queue[tail++] = n
-                }
-            }
-            if (tail > largest) largest = tail
-        }
-        return largest
     }
 
     // Render thread only, from here down.

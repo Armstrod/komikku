@@ -1,0 +1,856 @@
+package ca.mpreg.webgpuviewer.viewer
+
+import ca.mpreg.webgpuviewer.renderer.InkMap
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
+
+/**
+ * Finding speech bubbles on a page's [InkMap], and the order they are read in - plain
+ * computation on the map, with nothing of the GPU or the screen, for [BubbleZoom].
+ */
+internal object BubbleDetect {
+    /** A bubble is at least this bright where it was tapped, out of 255. */
+    private const val MIN_SEED_LUMA = 165
+
+    /** What counts as the bubble's own paper, relative to the brightness where it was tapped. */
+    private const val PAPER_FRACTION = 0.82f
+
+    /** How far a tap on the lettering looks for the paper around it, in map pixels. */
+    private const val SEED_RADIUS = 10
+
+    /** Largest share of the page a bubble may take - past this it's a white panel, not a bubble. */
+    private const val MAX_AREA = 0.12f
+
+    /** Share of a bubble's area its lettering takes, at least and at most. */
+    private const val MIN_INK = 0.015f
+    private const val MAX_INK = 0.45f
+
+    /** Largest single mark inside a bubble, as a share of it - a letter or a line of them. */
+    private const val MAX_MARK = 0.2f
+
+    /**
+     * How round a bubble is at least, measured once [CLOSE] has smoothed it: 1 for a circle,
+     * about 0.65 with a long tail, under 0.4 for a spiky radio bubble or two joined by a neck.
+     * Lettering laid over artwork, flooded through its white halo, stays near 0.2.
+     */
+    private const val MIN_COMPACTNESS = 0.33f
+
+    /** Share of its bounds a bubble fills at least - two joined by a neck fill about a third. */
+    private const val MIN_FILL = 0.3f
+
+    /**
+     * Map pixels the shape is closed over before it is measured or cut out: comic lettering
+     * often runs into the outline, and each letter that touches it would otherwise bite a notch
+     * out of the bubble - out of its outline length, and out of what is enlarged.
+     */
+    private const val CLOSE = 3
+
+    /** Map pixels added around the bubble, so its own outline comes with it. */
+    private const val OUTLINE = 2
+
+    /** What [lettered] asks of a bubble found for the sequence: marks, how alike, and in a row. */
+    const val MIN_LETTERS = 3
+    private const val LETTER_UNIFORMITY = 0.5f
+
+    /**
+     * A tapped bubble is checked the same way, a little more leniently - a finger chose it, and
+     * a short "NO!" is still worth opening - but no longer not at all: an outlined helmet or
+     * badge has no line of lettering in it.
+     */
+    const val TAP_LETTERS = 2
+
+    /** Letters are small next to their bubble: at most this share of its height (or width). */
+    private const val MAX_LETTER_SIZE = 0.55f
+
+    /** A line of lettering runs across a fair part of its bubble, letters close together. */
+    private const val MIN_LINE_SPAN = 0.22f
+
+    /** A line's middle sits at most this share of its bubble's width off the bubble's middle. */
+    private const val MAX_LINE_OFFSET = 0.2f
+
+    /** How far a letter's centre may sit off its line's middle, as a share of a letter. */
+    private const val LINE_ALIGN = 0.3f
+
+    /** How bright paper is for [findAll]'s patches - what a bubble's own white is at least. */
+    private const val PATCH_PAPER = 200
+
+    /**
+     * Letters are stout: their narrow side at least this share of their long one, at the median.
+     * Hatching - a row of short parallel strokes on a shiny surface - is all thin lines.
+     */
+    private const val MIN_LETTER_ASPECT = 0.34f
+
+    /** Letters are at least this tall - in map pixels, and as a share of the map's long side. */
+    private const val MIN_LETTER_PX = 4f
+    private const val MIN_LETTER_SHARE = 0.003f
+    private const val MAX_LETTER_GAP = 3f
+
+    /** Room around the bubble's bounds for [CLOSE] and [OUTLINE] to grow into. */
+    private const val PAD = 4
+
+    /** A bubble found on an [InkMap]: its bounds there, and its shape within them. */
+    class Found(val x0: Int, val y0: Int, val width: Int, val height: Int, val mask: ByteArray)
+
+    /**
+     * Every bubble on [map]: each patch of paper that doesn't reach the page's edge is tried as
+     * [find]'s seed, from its brightest pixel, so the same tests decide what is a bubble.
+     */
+    fun findAll(map: InkMap, openEdge: Int = NO_EDGE): List<Found> {
+        val w = map.width
+        val h = map.height
+        val luma = map.luma
+        // Bright paper only: a bubble on light grey art would otherwise run into it and be
+        // dropped as too big, though a finger's [find] gets it.
+        val paper = PATCH_PAPER
+        val seen = BooleanArray(w * h)
+        val queue = IntArray(w * h)
+        val maxArea = (MAX_AREA * w * h).toInt()
+        val out = ArrayList<Found>()
+        for (start in 0 until w * h) {
+            if (seen[start] || (luma[start].toInt() and 0xFF) < paper) continue
+            // One patch of paper, four-connected.
+            var head = 0
+            var tail = 0
+            seen[start] = true
+            queue[tail++] = start
+            var brightest = start
+            var x0 = w
+            var x1 = -1
+            var y0 = h
+            var y1 = -1
+            while (head < tail) {
+                val i = queue[head++]
+                val px = i % w
+                val py = i / w
+                if (px < x0) x0 = px
+                if (px > x1) x1 = px
+                if (py < y0) y0 = py
+                if (py > y1) y1 = py
+                if ((luma[i].toInt() and 0xFF) > (luma[brightest].toInt() and 0xFF)) brightest = i
+                for (n in intArrayOf(
+                    if (px > 0) i - 1 else -1,
+                    if (px < w - 1) i + 1 else -1,
+                    if (py > 0) i - w else -1,
+                    if (py < h - 1) i + w else -1,
+                )) {
+                    if (n < 0 || seen[n] || (luma[n].toInt() and 0xFF) < paper) continue
+                    seen[n] = true
+                    queue[tail++] = n
+                }
+            }
+            // Paper reaching the page's edge is tried too: a caption box cut by the trim is
+            // still a caption - find decides, its lettering test keeping gutters out.
+            if (tail > maxArea || tail < 200) continue
+            if (x1 - x0 + 1 < 0.03f * w || y1 - y0 + 1 < 0.02f * h) continue
+            val found = find(map, brightest % w, brightest / w, openEdge, letters = MIN_LETTERS) ?: continue
+            // The same bubble can surface twice where the adaptive threshold splits a patch.
+            val duplicate = out.any { other ->
+                val ix = max(0, min(found.x0 + found.width, other.x0 + other.width) - max(found.x0, other.x0))
+                val iy = max(0, min(found.y0 + found.height, other.y0 + other.height) - max(found.y0, other.y0))
+                ix * iy > 0.5f * min(found.width * found.height, other.width * other.height)
+            }
+            if (!duplicate) out += found
+        }
+        return out
+    }
+
+    /** Which side of the map, if any, a bubble may run off - the seam side of a spread's page. */
+    const val NO_EDGE = 0
+    const val LEFT_EDGE = 1
+    const val RIGHT_EDGE = 2
+
+    /**
+     * The speech bubble around map pixel ([x], [y]): the bright paper there, flood-filled up to the
+     * dark outline that closes it, its lettering filled in, its outline added back. Null for
+     * anything that doesn't look like a bubble - open to the page's edge, too big, too thin, or
+     * with nothing written in it.
+     */
+    fun find(map: InkMap, x: Int, y: Int, openEdge: Int = NO_EDGE, letters: Int = 0): Found? {
+        val w = map.width
+        val h = map.height
+
+        // A tap on the lettering starts from the brightest paper next to it.
+        var seedX = x
+        var seedY = y
+        var seedLuma = map[x, y]
+        if (seedLuma < MIN_SEED_LUMA) {
+            for (dy in -SEED_RADIUS..SEED_RADIUS) {
+                for (dx in -SEED_RADIUS..SEED_RADIUS) {
+                    val px = x + dx
+                    val py = y + dy
+                    if (px !in 0 until w || py !in 0 until h) continue
+                    val l = map[px, py]
+                    if (l > seedLuma) {
+                        seedLuma = l
+                        seedX = px
+                        seedY = py
+                    }
+                }
+            }
+            if (seedLuma < MIN_SEED_LUMA) return null
+        }
+        val paper = (seedLuma * PAPER_FRACTION).toInt()
+
+        // Flood the paper, four-connected, giving up once it's too big to be a bubble.
+        val maxArea = (MAX_AREA * w * h).toInt()
+        val inside = BooleanArray(w * h)
+        val queue = IntArray(maxArea + 1)
+        var head = 0
+        var tail = 0
+        var x0 = seedX
+        var x1 = seedX
+        var y0 = seedY
+        var y1 = seedY
+        inside[seedY * w + seedX] = true
+        queue[tail++] = seedY * w + seedX
+        while (head < tail) {
+            val i = queue[head++]
+            val px = i % w
+            val py = i / w
+            // Open to the page's edge: a gutter or a borderless panel, not a bubble - except at
+            // the open edge, which simply bounds it. Where lettering is asked for, any edge
+            // bounds it: a caption box cut off by the page's trim still holds its text, and a
+            // gutter or a panel has none to pass the test.
+            val atLeft = px == 0
+            val atRight = px == w - 1
+            val boundedByEdge = letters > 0
+            if (!boundedByEdge && (py == 0 || py == h - 1)) return null
+            if (!boundedByEdge && ((atLeft && openEdge != LEFT_EDGE) || (atRight && openEdge != RIGHT_EDGE))) {
+                return null
+            }
+            if (px < x0) x0 = px
+            if (px > x1) x1 = px
+            if (py < y0) y0 = py
+            if (py > y1) y1 = py
+            for (n in intArrayOf(
+                if (atLeft) -1 else i - 1,
+                if (atRight) -1 else i + 1,
+                if (py == 0) -1 else i - w,
+                if (py == h - 1) -1 else i + w,
+            )) {
+                if (n < 0 || inside[n] || (map.luma[n].toInt() and 0xFF) < paper) continue
+                if (tail >= maxArea) return null
+                inside[n] = true
+                queue[tail++] = n
+            }
+        }
+        val paperArea = tail
+
+        val bw = x1 - x0 + 1
+        val bh = y1 - y0 + 1
+        if (bw < 0.03f * w || bh < 0.02f * h || paperArea < 200) return null
+
+        // Fill the lettering in: everything in the bounds the outside can't reach is bubble.
+        val outW = bw + 2 * PAD
+        val outH = bh + 2 * PAD
+        val ox = x0 - PAD
+        val oy = y0 - PAD
+        val shape = BooleanArray(outW * outH)
+        for (sy in 0 until outH) {
+            for (sx in 0 until outW) {
+                val mx = ox + sx
+                val my = oy + sy
+                if (mx in 0 until w && my in 0 until h && inside[my * w + mx]) shape[sy * outW + sx] = true
+            }
+        }
+        val outside = outsideOf(shape, outW, outH)
+        var filledArea = 0
+        for (i in shape.indices) if (!outside[i]) filledArea++
+
+        // Round enough to be a bubble, small enough not to be a panel, and with something
+        // written in it - but only lettering, which is in small pieces. A panel's artwork is
+        // dense, or has a large piece.
+        if (filledArea < MIN_FILL * bw * bh || filledArea > maxArea) return null
+        val ink = (filledArea - paperArea).toFloat() / filledArea
+        if (ink < MIN_INK || ink > MAX_INK) return null
+        if (largestMark(shape, outside, outW, outH) > MAX_MARK * filledArea) return null
+        // What is written in it has to look like lettering, not a face, a glove or the rivets on
+        // an outlined piece of armour - for the sequence, which tries every patch of paper, and
+        // for a tap as well.
+        if (letters > 0 && !lettered(shape, outside, outW, outH, letters, minLetterSize(map))) return null
+
+        // Closed over the notches lettering bites out of it, then filled again.
+        val solid = BooleanArray(outW * outH) { !outside[it] }
+        val closed = grow(grow(solid, outW, outH, CLOSE, dilate = true), outW, outH, CLOSE, dilate = false)
+        val closedOutside = outsideOf(closed, outW, outH)
+
+        // Compact, as a bubble or a caption box is - not the ragged white halo of lettering laid
+        // over artwork, which floods into a shape all edge. Counted edges overshoot a smooth
+        // outline's length by about 4/pi, hence the correction; a circle comes out near 1.
+        var closedArea = 0
+        var edges = 0
+        for (sy in 0 until outH) {
+            for (sx in 0 until outW) {
+                val i = sy * outW + sx
+                if (!closedOutside[i]) closedArea++
+                if (sx > 0 && closedOutside[i] != closedOutside[i - 1]) edges++
+                if (sy > 0 && closedOutside[i] != closedOutside[i - outW]) edges++
+            }
+        }
+        val compactness = 64f * closedArea / (Math.PI.toFloat() * edges * edges)
+        if (compactness < MIN_COMPACTNESS) return null
+
+        // Grown by the outline.
+        val grown = grow(BooleanArray(outW * outH) { !closedOutside[it] }, outW, outH, OUTLINE, dilate = true)
+        val mask = ByteArray(outW * outH) { if (grown[it]) 0xFF.toByte() else 0 }
+        return Found(ox, oy, outW, outH, soften(mask, outW, outH))
+    }
+
+    /** What of a [w] x [h] frame can be reached from its border without crossing [shape]. */
+    private fun outsideOf(shape: BooleanArray, w: Int, h: Int): BooleanArray {
+        val outside = BooleanArray(w * h)
+        val queue = IntArray(w * h)
+        var head = 0
+        var tail = 0
+        fun reach(i: Int) {
+            if (!shape[i] && !outside[i]) {
+                outside[i] = true
+                queue[tail++] = i
+            }
+        }
+        for (x in 0 until w) {
+            reach(x)
+            reach((h - 1) * w + x)
+        }
+        for (y in 0 until h) {
+            reach(y * w)
+            reach(y * w + w - 1)
+        }
+        while (head < tail) {
+            val i = queue[head++]
+            val x = i % w
+            val y = i / w
+            if (x > 0) reach(i - 1)
+            if (x < w - 1) reach(i + 1)
+            if (y > 0) reach(i - w)
+            if (y < h - 1) reach(i + w)
+        }
+        return outside
+    }
+
+    /**
+     * [shape] dilated or eroded by a square of radius [r], one axis at a time. Past the frame
+     * counts as empty, which [PAD] keeps clear of the shape.
+     */
+    private fun grow(shape: BooleanArray, w: Int, h: Int, r: Int, dilate: Boolean): BooleanArray {
+        fun pass(src: BooleanArray, horizontal: Boolean): BooleanArray = BooleanArray(w * h) { i ->
+            val x = i % w
+            val y = i / w
+            var any = false
+            var all = true
+            for (d in -r..r) {
+                val v = if (horizontal) {
+                    val tx = x + d
+                    tx in 0 until w && src[y * w + tx]
+                } else {
+                    val ty = y + d
+                    ty in 0 until h && src[ty * w + x]
+                }
+                if (v) any = true else all = false
+            }
+            if (dilate) any else all
+        }
+        return pass(pass(shape, horizontal = true), horizontal = false)
+    }
+
+    /**
+     * Blurs the shape's hard map-pixel steps into a smooth field, so the edge drawn at its
+     * midpoint is a curve rather than a staircase once the bubble is enlarged. Two box passes
+     * each way, radius 2 - near enough a Gaussian.
+     */
+    private fun soften(mask: ByteArray, w: Int, h: Int): ByteArray {
+        var src = FloatArray(mask.size) { (mask[it].toInt() and 0xFF) / 255f }
+        val radius = 2
+        repeat(2) {
+            val horizontal = FloatArray(src.size)
+            for (y in 0 until h) {
+                for (x in 0 until w) {
+                    var sum = 0f
+                    for (d in -radius..radius) sum += src[y * w + (x + d).coerceIn(0, w - 1)]
+                    horizontal[y * w + x] = sum / (2 * radius + 1)
+                }
+            }
+            val vertical = FloatArray(src.size)
+            for (y in 0 until h) {
+                for (x in 0 until w) {
+                    var sum = 0f
+                    for (d in -radius..radius) sum += horizontal[(y + d).coerceIn(0, h - 1) * w + x]
+                    vertical[y * w + x] = sum / (2 * radius + 1)
+                }
+            }
+            src = vertical
+        }
+        return ByteArray(src.size) { (src[it] * 255f + 0.5f).toInt().coerceIn(0, 255).toByte() }
+    }
+
+    /**
+     * Whether the marks inside the bubble read as lettering: at least [minLetters] of them about
+     * one size, small next to the bubble, with [minLetters] or more side by side in a line that
+     * runs across a fair part of it, on one baseline, letters close together. A face has an eye or two, a glove a few long strokes, an
+     * outlined badge a large emblem; none of them is a line of small, evenly spaced marks.
+     */
+    /**
+     * Smallest a letter's height may be on [map], in map pixels: screentone's dots, which the
+     * map's min-pooling darkens into neat rows of specks, are far smaller than any lettering.
+     */
+    private fun minLetterSize(map: InkMap): Float = max(MIN_LETTER_PX, MIN_LETTER_SHARE * max(map.width, map.height))
+
+    private fun lettered(
+        paper: BooleanArray,
+        outside: BooleanArray,
+        w: Int,
+        h: Int,
+        minLetters: Int,
+        minSize: Float,
+    ): Boolean {
+        val seen = BooleanArray(w * h)
+        val queue = IntArray(w * h)
+        val marks = ArrayList<IntArray>()
+        // The bubble's own extent, to judge the marks against.
+        var bx0 = w
+        var bx1 = -1
+        var by0 = h
+        var by1 = -1
+        for (i in paper.indices) {
+            if (outside[i]) continue
+            val x = i % w
+            val y = i / w
+            if (x < bx0) bx0 = x
+            if (x > bx1) bx1 = x
+            if (y < by0) by0 = y
+            if (y > by1) by1 = y
+        }
+        if (bx1 < bx0 || by1 < by0) return false
+        val bubbleW = bx1 - bx0 + 1
+        val bubbleH = by1 - by0 + 1
+        for (start in paper.indices) {
+            if (paper[start] || outside[start] || seen[start]) continue
+            var head = 0
+            var tail = 0
+            seen[start] = true
+            queue[tail++] = start
+            var x0 = w
+            var x1 = -1
+            var y0 = h
+            var y1 = -1
+            while (head < tail) {
+                val i = queue[head++]
+                val x = i % w
+                val y = i / w
+                if (x < x0) x0 = x
+                if (x > x1) x1 = x
+                if (y < y0) y0 = y
+                if (y > y1) y1 = y
+                for (n in intArrayOf(
+                    if (x > 0) i - 1 else -1,
+                    if (x < w - 1) i + 1 else -1,
+                    if (y > 0) i - w else -1,
+                    if (y < h - 1) i + w else -1,
+                )) {
+                    if (n < 0 || paper[n] || outside[n] || seen[n]) continue
+                    seen[n] = true
+                    queue[tail++] = n
+                }
+            }
+            // A speck is not a letter.
+            if (tail < 3) continue
+            marks += intArrayOf(x0, y0, x1, y1)
+        }
+        if (marks.size < minLetters) return false
+        // Lines across only: down the bubble, hatching's strokes stack into columns as neatly
+        // as vertical lettering does, and lettered pages read across.
+        return lines(marks, across = true, bubbleW, bubbleH, (bx0 + bx1) * 0.5f, minLetters, minSize)
+    }
+
+    /**
+     * Whether [marks] (x0, y0, x1, y1 each) hold a line of lettering running [across] the bubble -
+     * else running down it. "Size" is a mark's extent across the line, "position" along it.
+     */
+    private fun lines(
+        marks: List<IntArray>,
+        across: Boolean,
+        bubbleW: Int,
+        bubbleH: Int,
+        /** The bubble's middle along the line. */
+        bubbleMid: Float,
+        minLetters: Int,
+        minSize: Float,
+    ): Boolean {
+        fun size(m: IntArray) = if (across) m[3] - m[1] + 1 else m[2] - m[0] + 1
+        fun center(m: IntArray) = if (across) (m[1] + m[3]) * 0.5f else (m[0] + m[2]) * 0.5f
+        fun start(m: IntArray) = if (across) m[0] else m[1]
+        fun end(m: IntArray) = if (across) m[2] else m[3]
+        val bubbleCross = if (across) bubbleH else bubbleW
+        val bubbleAlong = if (across) bubbleW else bubbleH
+
+        val median = marks.map { size(it) }.sorted()[marks.size / 2].toFloat()
+        if (median < minSize || median > MAX_LETTER_SIZE * bubbleCross) return false
+        val alike = marks.filter { size(it) >= 0.5f * median && size(it) <= 1.7f * median }
+        if (alike.size < minLetters || alike.size < LETTER_UNIFORMITY * marks.size) return false
+        val aspects = alike.map { m ->
+            val mw = m[2] - m[0] + 1
+            val mh = m[3] - m[1] + 1
+            min(mw, mh).toFloat() / max(mw, mh)
+        }.sorted()
+        if (aspects[aspects.size / 2] < MIN_LETTER_ASPECT) return false
+
+        // Lines: marks whose centres sit within most of a letter's size of each other.
+        val sorted = alike.sortedBy { center(it) }
+        var line = ArrayList<IntArray>()
+        var sum = 0f
+        fun good(l: List<IntArray>): Boolean {
+            if (l.size < minLetters) return false
+            // Letters sit on one baseline: most centres within a fraction of a letter of the
+            // line's middle. Hatching and dots scatter.
+            val mid = l.map { center(it) }.sorted()[l.size / 2]
+            val aligned = l.filter { abs(center(it) - mid) <= LINE_ALIGN * median }
+            if (aligned.size < minLetters || aligned.size < 0.7f * l.size) return false
+            val ordered = aligned.sortedBy { start(it) }
+            val span = end(ordered.last()) - start(ordered.first()) + 1
+            if (span < MIN_LINE_SPAN * bubbleAlong) return false
+            // Lettering is centred in its bubble; a few marks off to one side are artwork.
+            val lineMid = (start(ordered.first()) + end(ordered.last())) * 0.5f
+            if (abs(lineMid - bubbleMid) > MAX_LINE_OFFSET * bubbleAlong) return false
+            // Letters sit close; a few marks scattered across a shape do not.
+            var gaps = 0f
+            for (k in 1 until ordered.size) gaps += max(0, start(ordered[k]) - end(ordered[k - 1]))
+            return gaps / (ordered.size - 1) <= MAX_LETTER_GAP * median
+        }
+        for (m in sorted) {
+            if (line.isNotEmpty() && abs(center(m) - sum / line.size) > 0.6f * median) {
+                if (good(line)) return true
+                line = ArrayList()
+                sum = 0f
+            }
+            line += m
+            sum += center(m)
+        }
+        return good(line)
+    }
+
+    /** Size of the largest connected mark inside the bubble: filled in, but not its paper. */
+    private fun largestMark(paper: BooleanArray, outside: BooleanArray, w: Int, h: Int): Int {
+        val seen = BooleanArray(w * h)
+        val queue = IntArray(w * h)
+        var largest = 0
+        for (start in paper.indices) {
+            if (paper[start] || outside[start] || seen[start]) continue
+            var head = 0
+            var tail = 0
+            seen[start] = true
+            queue[tail++] = start
+            while (head < tail) {
+                val i = queue[head++]
+                val x = i % w
+                val y = i / w
+                for (n in intArrayOf(
+                    if (x > 0) i - 1 else -1,
+                    if (x < w - 1) i + 1 else -1,
+                    if (y > 0) i - w else -1,
+                    if (y < h - 1) i + w else -1,
+                )) {
+                    if (n < 0 || paper[n] || outside[n] || seen[n]) continue
+                    seen[n] = true
+                    queue[tail++] = n
+                }
+            }
+            if (tail > largest) largest = tail
+        }
+        return largest
+    }
+
+
+    // Reading order.
+
+    /** Paper at least this bright, out of 255, is gutter - as [PanelZoom]'s. */
+    private const val GUTTER_PAPER = 170
+
+    /** A line is a gutter when at least this share of it is paper - art may touch it. */
+    private const val CLEAR_LINE = 0.97f
+
+    /** A gutter at least this share of the piece's side across splits it - a speck doesn't. */
+    private const val MIN_GAP = 0.004f
+
+    /** How far a gutter may slant: its rise across the piece, as a share of the piece's width. */
+    private const val MAX_SLANT = 0.08f
+
+    /** How deep the cuts go - enough for any real layout. */
+    private const val MAX_CUT_DEPTH = 6
+
+    /** A piece smaller than this share of the page across or down isn't cut further. */
+    private const val MIN_PIECE = 0.06f
+
+    /**
+     * The order [boxes] (x0, y0, x1, y1 on [map]) are read in, as indices into it. Panel by
+     * panel first - the page cut along its gutters, slanted ones too, bands top to bottom and
+     * panels across a band right to left where [rightToLeft] - each bubble going to the panel
+     * holding its centre. Within a panel, top to bottom - except that a bubble further along the
+     * reading direction whose top is above the bottom of the one chosen comes first: lettering
+     * starts at the top right of a panel (top left left to right), and a bubble there sitting
+     * a little lower than one further left is still read before it.
+     */
+    fun readingOrder(map: InkMap, boxes: List<IntArray>, rightToLeft: Boolean): List<Int> {
+        if (boxes.isEmpty()) return emptyList()
+        val panels = panels(map, rightToLeft)
+        val byPanel = boxes.indices.groupBy { i ->
+            val b = boxes[i]
+            val cx = (b[0] + b[2]) / 2
+            val cy = (b[1] + b[3]) / 2
+            panels.indexOfFirst { it.contains(cx, cy) }.let { if (it < 0) panels.size else it }
+        }
+        val out = ArrayList<Int>()
+        for (panel in byPanel.keys.sorted()) out += orderWithin(boxes, byPanel.getValue(panel), rightToLeft)
+        return out
+    }
+
+    /** [members] of [boxes] in reading order within one panel - see [readingOrder]. */
+    private fun orderWithin(boxes: List<IntArray>, members: List<Int>, rightToLeft: Boolean): List<Int> {
+        fun top(i: Int) = boxes[i][1]
+        fun bottom(i: Int) = boxes[i][3]
+        fun centerX(i: Int) = (boxes[i][0] + boxes[i][2]) * 0.5f
+        fun ahead(a: Int, of: Int): Boolean {
+            // Clearly further along the line, not merely a hair across from it.
+            val margin = 0.15f * min(boxes[a][2] - boxes[a][0], boxes[of][2] - boxes[of][0])
+            return if (rightToLeft) centerX(a) > centerX(of) + margin else centerX(a) < centerX(of) - margin
+        }
+        val left = members.toMutableList()
+        val out = ArrayList<Int>()
+        while (left.isNotEmpty()) {
+            var pick = left.minBy { top(it) }
+            while (true) {
+                val p = pick
+                // Further along, and starting above where this one ends: read first. Each move
+                // goes further along the line, so this ends.
+                val before = left.filter { it != p && ahead(it, p) && top(it) < bottom(p) }
+                if (before.isEmpty()) break
+                pick = before.minBy { top(it) }
+            }
+            out += pick
+            left.remove(pick)
+        }
+        return out
+    }
+
+    /**
+     * A cut across a piece of the page: the line `v = v0 + slope * (u - u0)`, where for a
+     * [horizontal] cut u runs along x and v along y, and the other way round otherwise. A piece
+     * keeps to one side of it - [side] 1 below or right of it, -1 above or left.
+     */
+    class Cut(val horizontal: Boolean, val u0: Int, val v0: Float, val slope: Float, val side: Int) {
+        fun at(u: Int): Float = v0 + slope * (u - u0)
+
+        fun keeps(x: Int, y: Int): Boolean {
+            val u = if (horizontal) x else y
+            val v = if (horizontal) y else x
+            return side * (v - at(u)) >= 0f
+        }
+    }
+
+    /** A panel, or a piece of the page on the way to one: its bounds and the cuts around it. */
+    class Piece(val x0: Int, val y0: Int, val x1: Int, val y1: Int, val cuts: List<Cut>) {
+        fun contains(x: Int, y: Int): Boolean =
+            x in x0 until x1 && y in y0 until y1 && cuts.all { it.keeps(x, y) }
+    }
+
+    /**
+     * The page cut into panels in reading order. An XY-cut, as [PanelZoom.panelOrder]'s, but
+     * along gutters that may slant a little: a band of panels drawn at an angle is common, and
+     * no straight line runs clear across it. Bands read top to bottom, panels across a band
+     * right to left where [rightToLeft]. A page with no gutter across it is one piece.
+     */
+    fun panels(map: InkMap, rightToLeft: Boolean): List<Piece> {
+        val gutter = gutters(map)
+        val out = ArrayList<Piece>()
+        cut(map, gutter, Piece(0, 0, map.width, map.height, emptyList()), horizontal = true, 0, rightToLeft, out)
+        return out
+    }
+
+    /** The paper reachable from the page's edges, one flag per map pixel - its gutters. */
+    private fun gutters(map: InkMap): BooleanArray {
+        val w = map.width
+        val h = map.height
+        val luma = map.luma
+        fun paper(i: Int) = (luma[i].toInt() and 0xFF) >= GUTTER_PAPER
+        val gutter = BooleanArray(w * h)
+        val queue = IntArray(w * h)
+        var head = 0
+        var tail = 0
+        fun reach(i: Int) {
+            if (!gutter[i] && paper(i)) {
+                gutter[i] = true
+                queue[tail++] = i
+            }
+        }
+        for (px in 0 until w) {
+            reach(px)
+            reach((h - 1) * w + px)
+        }
+        for (py in 0 until h) {
+            reach(py * w)
+            reach(py * w + w - 1)
+        }
+        while (head < tail) {
+            val i = queue[head++]
+            val px = i % w
+            val py = i / w
+            if (px > 0) reach(i - 1)
+            if (px < w - 1) reach(i + 1)
+            if (py > 0) reach(i - w)
+            if (py < h - 1) reach(i + w)
+        }
+        return gutter
+    }
+
+    private fun cut(
+        map: InkMap,
+        gutter: BooleanArray,
+        piece: Piece,
+        horizontal: Boolean,
+        depth: Int,
+        rightToLeft: Boolean,
+        out: MutableList<Piece>,
+    ) {
+        val small = piece.x1 - piece.x0 < MIN_PIECE * map.width || piece.y1 - piece.y0 < MIN_PIECE * map.height
+        if (depth < MAX_CUT_DEPTH && !small) {
+            for (axisHorizontal in listOf(horizontal, !horizontal)) {
+                val lines = split(map, gutter, piece, axisHorizontal)
+                if (lines.isEmpty()) continue
+                var parts = ArrayList<Piece>()
+                val bounds = listOf<Cut?>(null) + lines + listOf<Cut?>(null)
+                for (k in 0 until bounds.size - 1) {
+                    val before = bounds[k]
+                    val after = bounds[k + 1]
+                    parts += piece.between(before, after, axisHorizontal)
+                }
+                if (!axisHorizontal && rightToLeft) parts = ArrayList(parts.reversed())
+                for (part in parts) cut(map, gutter, part, !axisHorizontal, depth + 1, rightToLeft, out)
+                return
+            }
+        }
+        out += piece
+    }
+
+    /** The part of this piece between two cuts across it (null for its own edge). */
+    private fun Piece.between(before: Cut?, after: Cut?, horizontal: Boolean): Piece {
+        val cuts = this.cuts.toMutableList()
+        val uFrom = if (horizontal) x0 else y0
+        val uTo = if (horizontal) x1 else y1
+        var vFrom = if (horizontal) y0 else x0
+        var vTo = if (horizontal) y1 else x1
+        if (before != null) {
+            cuts += Cut(horizontal, before.u0, before.v0, before.slope, 1)
+            vFrom = max(vFrom, min(before.at(uFrom), before.at(uTo - 1)).toInt())
+        }
+        if (after != null) {
+            cuts += Cut(horizontal, after.u0, after.v0, after.slope, -1)
+            vTo = min(vTo, max(after.at(uFrom), after.at(uTo - 1)).toInt() + 1)
+        }
+        return if (horizontal) {
+            Piece(x0, vFrom, x1, vTo, cuts)
+        } else {
+            Piece(vFrom, y0, vTo, y1, cuts)
+        }
+    }
+
+    /**
+     * The gutters crossing [piece] the other way - side to side for [horizontal] - as cuts
+     * along their middles, in order. Each candidate line, at every slant up to [MAX_SLANT], is
+     * a gutter where nearly all of it inside the piece is paper; runs of such lines at least
+     * [MIN_GAP] wide are gutters, the widest kept where they cross.
+     */
+    private fun split(map: InkMap, gutter: BooleanArray, piece: Piece, horizontal: Boolean): List<Cut> {
+        val w = map.width
+        val uFrom = if (horizontal) piece.x0 else piece.y0
+        val uTo = if (horizontal) piece.x1 else piece.y1
+        val vFrom = if (horizontal) piece.y0 else piece.x0
+        val vTo = if (horizontal) piece.y1 else piece.x1
+        val length = uTo - uFrom
+        val depth = vTo - vFrom
+        if (length < 4 || depth < 4) return emptyList()
+        val minGap = max(2, (depth * MIN_GAP).toInt())
+        val maxRise = (MAX_SLANT * length).toInt()
+        val riseStep = max(1, maxRise / 12)
+        val uStep = max(1, length / 300)
+
+        class Gap(val start: Int, val end: Int, val rise: Int) {
+            val mid get() = (start + end) * 0.5f
+            val width get() = end - start
+            fun line() = Cut(horizontal, uFrom, mid, rise.toFloat() / length, 0)
+        }
+
+        // Lines leave the piece rarely, so a line with more art than this fails early.
+        val maxMisses = ((1f - CLEAR_LINE) * length / uStep).toInt() + 1
+
+        fun clear(v0: Int, rise: Int): Boolean {
+            var inside = 0
+            var paper = 0
+            var u = uFrom
+            while (u < uTo) {
+                val v = v0 + rise * (u - uFrom) / length
+                if (v in vFrom until vTo) {
+                    val x = if (horizontal) u else v
+                    val y = if (horizontal) v else u
+                    if (piece.contains(x, y)) {
+                        inside++
+                        if (gutter[y * w + x]) paper++ else if (inside - paper > maxMisses) return false
+                    }
+                }
+                u += uStep
+            }
+            return inside * uStep >= length / 2 && paper >= CLEAR_LINE * inside
+        }
+
+        val gaps = ArrayList<Gap>()
+        var rise = -maxRise
+        while (rise <= maxRise) {
+            // A slanted line starts above (or before) the piece to reach all of it.
+            val from = vFrom - max(0, rise)
+            val to = vTo - min(0, rise)
+            var v = from
+            while (v < to) {
+                if (!clear(v, rise)) {
+                    v++
+                    continue
+                }
+                val start = v
+                while (v < to && clear(v, rise)) v++
+                // A margin at either end splits nothing.
+                val g = Gap(start, v, rise)
+                val lo = min(g.line().at(uFrom), g.line().at(uTo - 1))
+                val hi = max(g.line().at(uFrom), g.line().at(uTo - 1))
+                if (g.width >= minGap && lo > vFrom + minGap && hi < vTo - minGap) gaps += g
+            }
+            rise += riseStep
+        }
+        // The widest first; one that crosses or nears a kept one is the same gutter at another slant.
+        val kept = ArrayList<Gap>()
+        for (g in gaps.sortedByDescending { it.width }) {
+            val a = g.line()
+            val clash = kept.any { k ->
+                val b = k.line()
+                val d0 = a.at(uFrom) - b.at(uFrom)
+                val d1 = a.at(uTo - 1) - b.at(uTo - 1)
+                // Crossing, or near enough at either end to lie in the same gutter.
+                val near = max(g.width, k.width) + minGap * 2
+                d0 * d1 <= 0f || abs(d0) < near || abs(d1) < near
+            }
+            if (!clash) kept += g
+        }
+        // No sliver of a panel: a cut too near the piece's edge or the last cut kept is dropped.
+        val minBand = MIN_PIECE * (if (horizontal) map.height else map.width)
+        val lines = ArrayList<Cut>()
+        var lastFrom = vFrom.toFloat()
+        var lastTo = vFrom.toFloat()
+        for (g in kept.sortedBy { it.line().at((uFrom + uTo) / 2) }) {
+            val line = g.line()
+            val a = line.at(uFrom)
+            val b = line.at(uTo - 1)
+            if (min(a - lastFrom, b - lastTo) < minBand || min(vTo - a, vTo - b) < minBand) continue
+            lines += line
+            lastFrom = a
+            lastTo = b
+        }
+        return lines
+    }
+}

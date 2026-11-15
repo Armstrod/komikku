@@ -1,0 +1,82 @@
+package ca.mpreg.webgpuviewer.viewer
+
+import android.graphics.Bitmap
+import android.util.Log
+import ca.mpreg.webgpuviewer.renderer.InkMap
+import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import java.util.concurrent.TimeUnit
+import kotlin.math.max
+import kotlin.math.min
+
+/**
+ * Reads what is written in a bubble [BubbleDetect] found, with ML Kit's on-device text
+ * recognition: the shape tests can't always tell lettering from a row of hatching or
+ * screentone, but a recogniser that finds no letters at all can. Off the main thread only -
+ * it waits for the recogniser.
+ */
+internal object TextCheck {
+    /** The crop is enlarged until it is at least this wide - small lettering reads poorly. */
+    private const val MIN_WIDTH = 320
+
+    /** At most this much larger. */
+    private const val MAX_SCALE = 3f
+
+    /** How long one bubble may take before it is given the benefit of the doubt. */
+    private const val TIMEOUT_MS = 1500L
+
+    /** Letters or digits recognised, at least, for it to count as lettering. */
+    private const val MIN_CHARS = 2
+
+    private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
+
+    /** Whether ML Kit could be used at all - once it fails, every bubble passes. */
+    @Volatile
+    private var broken = false
+
+    /**
+     * Whether [found] on [map] has lettering in it. True too where the recogniser can't run or
+     * doesn't answer in time: it confirms what the shape tests found, never decides alone.
+     */
+    fun hasText(map: InkMap, found: BubbleDetect.Found): Boolean {
+        if (broken) return true
+        return try {
+            val bitmap = crop(map, found) ?: return true
+            val task = recognizer.process(InputImage.fromBitmap(bitmap, 0))
+            val result = Tasks.await(task, TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            bitmap.recycle()
+            result.text.count { it.isLetterOrDigit() } >= MIN_CHARS
+        } catch (e: java.util.concurrent.TimeoutException) {
+            true
+        } catch (e: Exception) {
+            Log.w("TextCheck", "Text recognition failed", e)
+            broken = true
+            true
+        }
+    }
+
+    /** The bubble cut from [map], paper outside its shape, enlarged for the recogniser. */
+    private fun crop(map: InkMap, found: BubbleDetect.Found): Bitmap? {
+        val w = found.width
+        val h = found.height
+        if (w <= 0 || h <= 0) return null
+        val pixels = IntArray(w * h)
+        for (y in 0 until h) {
+            val my = found.y0 + y
+            for (x in 0 until w) {
+                val mx = found.x0 + x
+                val inside = (found.mask[y * w + x].toInt() and 0xFF) >= 128
+                val l = if (inside && mx in 0 until map.width && my in 0 until map.height) map[mx, my] else 255
+                pixels[y * w + x] = (0xFF shl 24) or (l shl 16) or (l shl 8) or l
+            }
+        }
+        val small = Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
+        val scale = min(MAX_SCALE, max(1f, MIN_WIDTH.toFloat() / w))
+        if (scale <= 1f) return small
+        val big = Bitmap.createScaledBitmap(small, (w * scale).toInt(), (h * scale).toInt(), true)
+        if (big !== small) small.recycle()
+        return big
+    }
+}

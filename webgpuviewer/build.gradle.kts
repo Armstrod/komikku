@@ -36,6 +36,10 @@ dependencies {
     implementation(androidx.corektx)
     implementation(compose.foundation)
     implementation(kotlinx.coroutines.core)
+
+    // On-device text recognition, bundled (no Play Services download): confirms a bubble found
+    // for the sequence has lettering in it - see TextCheck.
+    implementation("com.google.mlkit:text-recognition:16.0.1")
 }
 
 /** Unpacks the release's prebuilt libresize.so, one per ABI, as a jniLibs directory. */

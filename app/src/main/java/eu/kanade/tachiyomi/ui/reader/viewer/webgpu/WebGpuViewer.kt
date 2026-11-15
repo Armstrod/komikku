@@ -1718,6 +1718,9 @@ open class WebGpuViewer(
 
     private fun applyWideZoomIfNeeded(page: ImagePage.ImageSingle): Boolean {
         if (!config.landscapeZoom) return false
+        // Bubbles docked below the page: a wide page fits whole in the room above them, half of
+        // it off screen would hide half its bubbles.
+        if (config.bubbleZoom && config.bubbleDock) return false
 
         val screenW = pager.state.width
         val screenH = pager.state.viewportHeight
