@@ -87,6 +87,12 @@ internal class BubbleOverlay(
     @Volatile
     var progress: Float = 0f
 
+    /** What text recognition read in it, where it ran - for the debug log. */
+    var text: String? = null
+
+    /** Drawn by hand in debug mode, not found. */
+    var manual: Boolean = false
+
     // Render thread only, like everything below.
     private var maskTexture: GPUTexture? = null
     private var maskView: GPUTextureView? = null
@@ -142,7 +148,10 @@ internal class BubbleOverlay(
         zoom,
         screenPerImagePixel,
         dim,
-    )
+    ).also {
+        it.text = text
+        it.manual = manual
+    }
 
     /** On the render thread. */
     fun release() {
@@ -176,6 +185,9 @@ internal object BubbleZoom {
     private const val DOCK_FIT_HEIGHT = 0.9f
     private const val DOCK_MAX_ZOOM = 4.5f
     private const val DOCK_MIN_ZOOM = 1f
+
+    /** Room kept round a docked bubble, as a share of the screen. */
+    private const val DOCK_MARGIN = 0.02f
 
     /**
      * The bubble under the tap at ([tapX], [tapY]) - normalised screen coordinates on a
@@ -258,7 +270,9 @@ internal object BubbleZoom {
                 // be read where it sits.
                 if (overlay.centerX !in 0f..1f || overlay.centerY !in 0f..1f) continue
                 // Read last, being the slowest: hatching or screentone can pass the shape tests.
-                if (!TextCheck.hasText(map, found)) continue
+                val text = TextCheck.read(map, found)
+                if (text != null && !TextCheck.isLettering(text)) continue
+                overlay.text = text
                 placed += overlay
                 boxes += intArrayOf(found.x0, found.y0, found.x0 + found.width, found.y0 + found.height)
             }
@@ -308,24 +322,109 @@ internal object BubbleZoom {
             imageRect[0] + (found.x0 + found.width) * sx,
             imageRect[1] + (found.y0 + found.height) * sy,
         )
+        return place(
+            page,
+            screenWidth,
+            screenHeight,
+            rect,
+            imageRect,
+            screenPerImagePixel = (imageRect[2] - imageRect[0]) * screenWidth / image.width,
+            mask = found.mask,
+            maskWidth = found.width,
+            maskHeight = found.height,
+            dock = dock,
+        )
+    }
+
+    /**
+     * A bubble at [rect] on screen, drawn by hand in debug mode - for one the finder missed, or
+     * lettering with no bubble round it. Opened as a found one is, its whole box enlarged.
+     */
+    fun manual(
+        page: ImagePage.ImageSingle,
+        screenWidth: Int,
+        screenHeight: Int,
+        rect: FloatArray,
+        dock: FloatArray? = null,
+    ): BubbleOverlay? {
+        val hit = imageAt(page, screenWidth, screenHeight, (rect[0] + rect[2]) * 0.5f, (rect[1] + rect[3]) * 0.5f)
+            ?: return null
+        val side = 16
+        return place(
+            page,
+            screenWidth,
+            screenHeight,
+            rect,
+            hit.rect,
+            screenPerImagePixel = (hit.rect[2] - hit.rect[0]) * screenWidth / hit.image.width,
+            mask = ByteArray(side * side) { 0xFF.toByte() },
+            maskWidth = side,
+            maskHeight = side,
+            dock = dock,
+            minZoom = 1f,
+        )?.also { it.manual = true }
+    }
+
+    /**
+     * Where the bubble at [rect] on screen opens, and how large: in [dock] below the page where
+     * there is one and it grows there - across and down from the middle as far as it sat from
+     * the page's middle, so where it came from still shows - else in place, pushed on screen.
+     */
+    private fun place(
+        page: ImagePage.ImageSingle,
+        screenWidth: Int,
+        screenHeight: Int,
+        rect: FloatArray,
+        imageRect: FloatArray,
+        screenPerImagePixel: Float,
+        mask: ByteArray,
+        maskWidth: Int,
+        maskHeight: Int,
+        dock: FloatArray?,
+        minZoom: Float = MIN_ZOOM,
+    ): BubbleOverlay? {
         val bubbleWidth = (rect[2] - rect[0]) * screenWidth
         val bubbleHeight = (rect[3] - rect[1]) * screenHeight
-        if (dock != null && bubbleWidth > 0f && bubbleHeight > 0f) {
+        if (bubbleWidth <= 0f || bubbleHeight <= 0f) return null
+
+        // Pushed back inside [from, to] by its half size and a margin - centred when it can't fit.
+        fun settle(center: Float, halfSize: Float, margin: Float, from: Float = 0f, to: Float = 1f): Float =
+            if (halfSize + margin >= (to - from) * 0.5f) {
+                (from + to) * 0.5f
+            } else {
+                center.coerceIn(from + halfSize + margin, to - halfSize - margin)
+            }
+
+        if (dock != null) {
             val dockHeight = (dock[1] - dock[0]) * screenHeight
             val docked = min(
                 DOCK_MAX_ZOOM,
                 min(DOCK_FIT_WIDTH * screenWidth / bubbleWidth, DOCK_FIT_HEIGHT * dockHeight / bubbleHeight),
             )
             if (docked >= DOCK_MIN_ZOOM) {
+                // Down the band as far down the page as it sat.
+                val pageTop = imageRect[1].coerceAtLeast(0f)
+                val pageBottom = imageRect[3].coerceAtMost(1f)
+                val down = if (pageBottom > pageTop) {
+                    (((rect[1] + rect[3]) * 0.5f - pageTop) / (pageBottom - pageTop)).coerceIn(0f, 1f)
+                } else {
+                    0.5f
+                }
                 return BubbleOverlay(
-                    screenPerImagePixel = (imageRect[2] - imageRect[0]) * screenWidth / image.width,
+                    screenPerImagePixel = screenPerImagePixel,
                     page = page,
-                    mask = found.mask,
-                    maskWidth = found.width,
-                    maskHeight = found.height,
+                    mask = mask,
+                    maskWidth = maskWidth,
+                    maskHeight = maskHeight,
                     rect = rect,
-                    targetX = 0.5f,
-                    targetY = (dock[0] + dock[1]) * 0.5f,
+                    targetX = settle((rect[0] + rect[2]) * 0.5f, docked * (rect[2] - rect[0]) * 0.5f, DOCK_MARGIN),
+                    targetY = settle(
+                        dock[0] + down * (dock[1] - dock[0]),
+                        docked * (rect[3] - rect[1]) * 0.5f,
+                        DOCK_MARGIN,
+                        dock[0],
+                        dock[1],
+                    ),
                     zoom = docked,
                     dim = 0f,
                 )
@@ -335,23 +434,43 @@ internal object BubbleZoom {
             MAX_ZOOM,
             min(FIT_WIDTH * screenWidth / bubbleWidth, FIT_HEIGHT * screenHeight / bubbleHeight),
         )
-        if (zoom < MIN_ZOOM) return null
-
-        // Opens where it is, pushed back on screen - centred when it takes most of the width.
-        fun settle(center: Float, halfSize: Float, margin: Float): Float =
-            if (halfSize + margin >= 0.5f) 0.5f else center.coerceIn(halfSize + margin, 1f - halfSize - margin)
+        if (zoom < minZoom) return null
 
         return BubbleOverlay(
-            screenPerImagePixel = (imageRect[2] - imageRect[0]) * screenWidth / image.width,
+            screenPerImagePixel = screenPerImagePixel,
             page = page,
-            mask = found.mask,
-            maskWidth = found.width,
-            maskHeight = found.height,
+            mask = mask,
+            maskWidth = maskWidth,
+            maskHeight = maskHeight,
             rect = rect,
             targetX = settle((rect[0] + rect[2]) * 0.5f, zoom * (rect[2] - rect[0]) * 0.5f, 0.03f),
             targetY = settle((rect[1] + rect[3]) * 0.5f, zoom * (rect[3] - rect[1]) * 0.5f, 0.05f),
-            zoom = zoom,
+            zoom = max(zoom, 1f),
         )
+    }
+
+    /**
+     * Where [rect] on screen lies on [page]'s images: which one, by [ImagePage.forEachImage]'s
+     * order, and its bounds as a share of that image (u0, v0, u1, v1). For the debug log.
+     */
+    fun onImage(
+        page: ImagePage.ImageSingle,
+        screenWidth: Int,
+        screenHeight: Int,
+        rect: FloatArray,
+    ): Pair<Int, FloatArray>? {
+        val hit = imageAt(page, screenWidth, screenHeight, (rect[0] + rect[2]) * 0.5f, (rect[1] + rect[3]) * 0.5f)
+            ?: return null
+        var index = -1
+        var k = 0
+        page.forEachImage { image, _, _ ->
+            if (image === hit.image) index = k
+            k++
+        }
+        val r = hit.rect
+        fun u(x: Float) = (x - r[0]) / (r[2] - r[0])
+        fun v(y: Float) = (y - r[1]) / (r[3] - r[1])
+        return index to floatArrayOf(u(rect[0]), v(rect[1]), u(rect[2]), v(rect[3]))
     }
 
     /** One of [page]'s images and where it sits on screen - see [imageAt]. */

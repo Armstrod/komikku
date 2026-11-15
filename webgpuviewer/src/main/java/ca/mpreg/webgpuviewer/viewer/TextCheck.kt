@@ -40,20 +40,26 @@ internal object TextCheck {
      * Whether [found] on [map] has lettering in it. True too where the recogniser can't run or
      * doesn't answer in time: it confirms what the shape tests found, never decides alone.
      */
-    fun hasText(map: InkMap, found: BubbleDetect.Found): Boolean {
-        if (broken) return true
+    fun hasText(map: InkMap, found: BubbleDetect.Found): Boolean = read(map, found)?.let(::isLettering) ?: true
+
+    /** Whether recognised [text] holds enough letters or digits to be lettering. */
+    fun isLettering(text: String): Boolean = text.count { it.isLetterOrDigit() } >= MIN_CHARS
+
+    /** What the recogniser reads in [found] on [map] - null where it can't run or is too slow. */
+    fun read(map: InkMap, found: BubbleDetect.Found): String? {
+        if (broken) return null
         return try {
-            val bitmap = crop(map, found) ?: return true
+            val bitmap = crop(map, found) ?: return null
             val task = recognizer.process(InputImage.fromBitmap(bitmap, 0))
             val result = Tasks.await(task, TIMEOUT_MS, TimeUnit.MILLISECONDS)
             bitmap.recycle()
-            result.text.count { it.isLetterOrDigit() } >= MIN_CHARS
+            result.text
         } catch (e: java.util.concurrent.TimeoutException) {
-            true
+            null
         } catch (e: Exception) {
             Log.w("TextCheck", "Text recognition failed", e)
             broken = true
-            true
+            null
         }
     }
 

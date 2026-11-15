@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.ui.reader.viewer.webgpu
 
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.PointF
 import android.graphics.Rect
@@ -37,6 +38,7 @@ import ca.mpreg.webgpuviewer.transition.TransitionStackDown
 import ca.mpreg.webgpuviewer.transition.TransitionStackLeft
 import ca.mpreg.webgpuviewer.transition.TransitionStackRight
 import ca.mpreg.webgpuviewer.transition.TransitionStackUp
+import ca.mpreg.webgpuviewer.viewer.BubbleDebugLog
 import ca.mpreg.webgpuviewer.viewer.ImagePage
 import ca.mpreg.webgpuviewer.viewer.ImageViewerContinuousState
 import com.google.android.material.color.MaterialColors
@@ -52,8 +54,12 @@ import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences.TransitionAnimati
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView.ZoomStartPosition
 import eu.kanade.tachiyomi.ui.reader.viewer.Viewer
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerNavigation.NavigationRegion
+import eu.kanade.tachiyomi.util.storage.getUriCompat
 import eu.kanade.tachiyomi.util.system.createReaderThemeContext
 import eu.kanade.tachiyomi.util.system.readerBackgroundColor
+import eu.kanade.tachiyomi.util.system.toShareIntent
+import eu.kanade.tachiyomi.util.system.toast
+import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -64,6 +70,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
 import uy.kohesive.injekt.injectLazy
@@ -1075,7 +1082,14 @@ open class WebGpuViewer(
             // Every page rests somewhere else now: rebuilt, as for any change to how they sit.
             if (dockChanged && bubbleZoomApplied) config.imagePropertyChangedListener?.invoke()
             bubbleZoomApplied = true
+            val debug = config.bubbleZoom && config.bubbleDebug
+            if (pager.state.bubbleDebug != debug) {
+                pager.state.bubbleDebug = debug
+                pager.state.refreshDebug()
+            }
         }
+        pager.state.pageLabel = ::debugPageLabel
+        pager.state.onDebugExport = ::exportBubbleDebug
         applyBubbleZoom()
         config.bubbleZoomChangedListener = ::applyBubbleZoom
 
@@ -2031,6 +2045,28 @@ open class WebGpuViewer(
     protected open fun animateTurn(direction: Int, fromSpread: ImagePage) {
         pager.state.transitionFromPage = fromSpread
         pager.state.animatePageTurn(if (isReversed) direction else -direction)
+    }
+
+    /** The page on screen, named for the bubble debug log: book, chapter and page number. */
+    private fun debugPageLabel(): String? {
+        val page = (currentPage as? ViewerReaderPage)?.page ?: return null
+        val title = activity.viewModel.manga?.title.orEmpty()
+        val chapter = runCatching { page.chapter.chapter.name }.getOrDefault("")
+        return "$title | $chapter | p${page.index + 1}"
+    }
+
+    /** Writes the bubble debug log out as a zip and offers to share it. */
+    private fun exportBubbleDebug() {
+        scope.launch {
+            val file = runCatching {
+                withContext(Dispatchers.IO) { BubbleDebugLog.export(File(activity.cacheDir, "bubble-debug")) }
+            }.getOrElse {
+                activity.toast(it.message ?: "Export failed")
+                return@launch
+            }
+            val share = file.getUriCompat(activity).toShareIntent(activity, type = "application/zip")
+            activity.startActivity(Intent.createChooser(share, file.name))
+        }
     }
 
     /**

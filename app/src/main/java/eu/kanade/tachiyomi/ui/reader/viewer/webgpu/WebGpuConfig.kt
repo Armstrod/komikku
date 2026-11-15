@@ -89,6 +89,9 @@ class WebGpuConfig(
     var bubbleDock = false
         private set
 
+    var bubbleDebug = false
+        private set
+
     /** Either bubble zoom setting changed. */
     var bubbleZoomChangedListener: (() -> Unit)? = null
 
@@ -223,6 +226,10 @@ class WebGpuConfig(
         )
         readerPreferences.bubbleDock().register(
             { bubbleDock = it },
+            { bubbleZoomChangedListener?.invoke() },
+        )
+        readerPreferences.bubbleDebug().register(
+            { bubbleDebug = it },
             { bubbleZoomChangedListener?.invoke() },
         )
 

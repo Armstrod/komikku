@@ -245,6 +245,9 @@ class ReaderPreferences(
     /** The page rests at the top of the screen and bubbles open enlarged in the room below. */
     fun bubbleDock() = preferenceStore.getBoolean("webgpu_bubble_dock", false)
 
+    /** Every bubble found outlined and numbered, with tools to correct them and a log to export. */
+    fun bubbleDebug() = preferenceStore.getBoolean("webgpu_bubble_debug", false)
+
     /** A soft paper flip on every page turn. */
     fun pageTurnSound() = preferenceStore.getBoolean("webgpu_page_turn_sound", false)
 

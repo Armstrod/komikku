@@ -179,7 +179,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
                 if (current != null) Transition.rotateCacheOnPageChange(current) else Transition.invalidateCache()
                 if (autoOpenPending) {
                     autoOpenPending = false
-                    if (bubbleAutoOpen) scheduleAutoOpen()
+                    if (bubbleAutoOpen || bubbleDebug) scheduleAutoOpen()
                 }
             }
         }
@@ -315,7 +315,63 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     /** The speech bubble open over the page, if any - see [BubbleZoom]. */
     @Volatile
     internal var bubble: BubbleOverlay? = null
+        private set(value) {
+            field = value
+            // Docked below the page, where it came from is outlined on the page - see BubbleUi.
+            outlineRect = value?.takeIf { it.dim == 0f }?.rect
+            publishDebug()
+        }
+
+    /** The open bubble's bounds on the page, normalised, while it is docked below it. */
+    var outlineRect: FloatArray? by mutableStateOf(null)
         private set
+
+    /**
+     * Debug mode: the page's bubbles outlined and numbered, the open one editable - moved,
+     * deleted, or one added by drawing a box - and every page and correction logged to
+     * [BubbleDebugLog] for export.
+     */
+    var bubbleDebug: Boolean by mutableStateOf(false)
+
+    /** Names the page on screen for the debug log - its book, chapter and number. */
+    var pageLabel: (() -> String?)? = null
+
+    /** The debug toolbar's export: the app writes [BubbleDebugLog] out and shares it. */
+    var onDebugExport: (() -> Unit)? = null
+
+    /** Debug: the page's bubbles in order, their bounds on screen normalised; the open one's place. */
+    var debugRects: List<FloatArray> by mutableStateOf(emptyList())
+        private set
+    var debugActive: Int by mutableStateOf(-1)
+        private set
+
+    /** Debug: the next drag on the page draws a missed bubble - see [debugAdd]. */
+    var debugAdding: Boolean by mutableStateOf(false)
+
+    /** Debug: pages logged, shown on the export button. */
+    var debugLogged: Int by mutableStateOf(0)
+        private set
+
+    /** Debug: the page whose corrections are being logged, its label, and how they stand. */
+    private var debugPage: ImagePage? = null
+    private var debugLabel: String? = null
+
+    private fun publishDebug() {
+        if (!bubbleDebug) {
+            if (debugRects.isNotEmpty()) debugRects = emptyList()
+            debugActive = -1
+            return
+        }
+        val seq = sequence
+        if (seq == null || sequencePage !== getPage(0)) {
+            if (debugRects.isNotEmpty()) debugRects = emptyList()
+            debugActive = -1
+            return
+        }
+        debugRects = seq.map { it.rect }
+        val open = bubble
+        debugActive = if (open == null) -1 else seq.indexOfFirst { it === open || it.rect.contentEquals(open.rect) }
+    }
 
     private var bubbleJob: Job? = null
 
@@ -465,14 +521,120 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         }
     }
 
-    /** With [bubbleAutoOpen]: once the page turned to is ready, its first bubble opens. */
+    /**
+     * Once the page turned to is ready: with [bubbleAutoOpen] its first bubble opens, and in
+     * [bubbleDebug] its bubbles are found and outlined straight away.
+     */
     private fun scheduleAutoOpen() {
         autoOpenJob?.cancel()
         autoOpenJob = scope?.launch {
             val page = getPage(0) as? ImagePage.ImageSingle ?: return@launch
             awaitInk(page, INK_WAIT_AUTO_MS)
             if (getPage(0) !== page || pageOffset != 0f || bubble != null || !page.atHomeScale) return@launch
-            guidedNext()
+            if (bubbleAutoOpen) {
+                guidedNext()
+            } else if (bubbleDebug) {
+                sequenceOf(page)
+            }
+        }
+    }
+
+    /** Debug mode turned on, or the reader opened: the page on screen is scanned now. */
+    fun refreshDebug() {
+        publishDebug()
+        if (bubbleDebug && sequencePage !== getPage(0)) scheduleAutoOpen()
+    }
+
+    /** The page's first scan in debug mode: what was found is logged, before any correction. */
+    private fun startDebugLog(page: ImagePage.ImageSingle, found: List<BubbleOverlay>) {
+        val label = pageLabel?.invoke() ?: return
+        debugPage = page
+        debugLabel = label
+        if (BubbleDebugLog.has(label)) return
+        val maps = ArrayList<ca.mpreg.webgpuviewer.renderer.InkMap>()
+        page.forEachImage { image, _, _ -> image.inkMap?.let { maps += it } }
+        val boxes = logBoxes(page, found)
+        val rtl = isReversed
+        scope?.launch(Dispatchers.Default) {
+            BubbleDebugLog.start(label, rtl, boxes, maps)
+            debugLogged = BubbleDebugLog.size
+        }
+    }
+
+    private fun logBoxes(page: ImagePage.ImageSingle, list: List<BubbleOverlay>): List<BubbleDebugLog.Box> {
+        val w = width
+        val h = height
+        return list.mapNotNull { b ->
+            val (image, bounds) = BubbleZoom.onImage(page, w, h, b.rect) ?: return@mapNotNull null
+            BubbleDebugLog.Box(image, bounds, b.text, b.manual)
+        }
+    }
+
+    /** Logs [edit] on the debug page, with its bubbles as they now stand. */
+    private fun logEdit(page: ImagePage.ImageSingle, edit: String) {
+        val label = debugLabel?.takeIf { debugPage === page } ?: return
+        BubbleDebugLog.edit(label, edit, logBoxes(page, sequence.orEmpty()))
+    }
+
+    /** Debug: the open bubble moves [delta] places in the reading order. */
+    suspend fun debugMove(delta: Int) = withFrameClock {
+        if (!guidedBusy.compareAndSet(false, true)) return@withFrameClock
+        try {
+            val current = bubble ?: return@withFrameClock
+            val page = current.page
+            val seq = sequenceFor(page, current).toMutableList()
+            val at = indexIn(seq, current)
+            val to = at + delta
+            if (at < 0 || to !in seq.indices) return@withFrameClock
+            seq.add(to, seq.removeAt(at))
+            sequence = seq
+            logEdit(page, "move ${at + 1} -> ${to + 1}")
+        } finally {
+            guidedBusy.set(false)
+        }
+    }
+
+    /** Debug: the open bubble isn't one - it leaves the order and the next opens. */
+    suspend fun debugDelete() = withFrameClock {
+        if (!guidedBusy.compareAndSet(false, true)) return@withFrameClock
+        try {
+            val current = bubble ?: return@withFrameClock
+            val page = current.page
+            val seq = sequenceFor(page, current).toMutableList()
+            val at = indexIn(seq, current)
+            if (at < 0) return@withFrameClock
+            seq.removeAt(at)
+            sequence = seq
+            logEdit(page, "delete ${at + 1}")
+            if (at in seq.indices) switchBubble(current, seq[at].fresh()) else dismissBubble()
+        } finally {
+            guidedBusy.set(false)
+        }
+    }
+
+    /**
+     * Debug: a bubble the finder missed, drawn as [rect] on screen (normalised), goes in after
+     * the open one - or last with none open - and opens.
+     */
+    suspend fun debugAdd(rect: FloatArray) = withFrameClock {
+        debugAdding = false
+        if (!guidedBusy.compareAndSet(false, true)) return@withFrameClock
+        try {
+            if (pageOffset != 0f) return@withFrameClock
+            val page = getPage(0) as? ImagePage.ImageSingle ?: return@withFrameClock
+            val w = width
+            val h = height
+            if (w <= 0 || h <= 0) return@withFrameClock
+            val added = BubbleZoom.manual(page, w, h, rect, dockRegion(page)) ?: return@withFrameClock
+            val current = bubble?.takeIf { it.page === page }
+            val seq = (if (current != null) sequenceFor(page, current) else sequenceOf(page)).toMutableList()
+            val at = if (current != null) indexIn(seq, current) + 1 else seq.size
+            seq.add(at.coerceIn(0, seq.size), added)
+            sequence = seq
+            logEdit(page, "add at ${at + 1}")
+            if (current != null) switchBubble(current, added.fresh()) else open(added.fresh())
+        } finally {
+            guidedBusy.set(false)
         }
     }
 
@@ -523,6 +685,10 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
 
     /** The page's bubbles in reading order, found once per page - see [stepBubble]. */
     private var sequence: List<BubbleOverlay>? = null
+        set(value) {
+            field = value
+            publishDebug()
+        }
     private var sequencePage: ImagePage? = null
 
     private suspend fun sequenceFor(page: ImagePage.ImageSingle, current: BubbleOverlay): List<BubbleOverlay> {
@@ -540,8 +706,9 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         } else {
             emptyList()
         }
-        sequence = found
         sequencePage = page
+        sequence = found
+        if (bubbleDebug) startDebugLog(page, found)
         return found
     }
 
@@ -559,8 +726,9 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         } else {
             emptyList()
         }
-        sequence = found
         sequencePage = page
+        sequence = found
+        if (bubbleDebug) startDebugLog(page, found)
         return found
     }
 
@@ -658,8 +826,9 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
 
     /** Drops the open bubble at once, for a page that is going away. */
     private fun dropBubble() {
-        sequence = null
         sequencePage = null
+        sequence = null
+        debugAdding = false
         guidedDonePage = null
         autoOpenJob?.cancel()
         val current = bubble ?: return
