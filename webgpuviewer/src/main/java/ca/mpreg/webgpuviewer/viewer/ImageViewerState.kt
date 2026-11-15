@@ -57,6 +57,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 
 open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boolean = false) {
     val renderer = WebGpuRenderer()
@@ -179,7 +180,8 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
                 if (current != null) Transition.rotateCacheOnPageChange(current) else Transition.invalidateCache()
                 if (autoOpenPending) {
                     autoOpenPending = false
-                    if (bubbleAutoOpen || bubbleDebug) scheduleAutoOpen()
+                    val wanted = bubbleAutoOpen || bubbleDebug || bubbleDock || bubbleGuided
+                    if (bubbleZoomEnabled && wanted) scheduleAutoOpen()
                 }
             }
         }
@@ -322,6 +324,10 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             field = value
             // Docked below the page, where it came from is outlined on the page - see BubbleUi.
             outlineRect = value?.takeIf { it.dim == 0f }?.bounds
+            if (value == null || !cameraMode(value)) {
+                cameraJob?.cancel()
+                setCamera(null)
+            }
             publishDebug()
         }
 
@@ -359,21 +365,238 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     private var debugPage: ImagePage? = null
     private var debugLabel: String? = null
 
+    /**
+     * The page's bubbles as found, outlined on it - blue, the open one red - where they are
+     * shown below the page or in debug mode; see BubbleUi.
+     */
+    internal var marks: List<BubbleOverlay> by mutableStateOf(emptyList())
+        private set
+    var markActive: Int by mutableStateOf(-1)
+        private set
+
     private fun publishDebug() {
-        if (!bubbleDebug) {
-            if (debugRects.isNotEmpty()) debugRects = emptyList()
-            debugActive = -1
-            return
+        val seq = sequence?.takeIf { sequencePage === getPage(0) }
+        val open = bubble
+        val active = if (seq == null || open == null) {
+            -1
+        } else {
+            seq.indexOfFirst { it === open || it.rect.contentEquals(open.rect) }
         }
-        val seq = sequence
-        if (seq == null || sequencePage !== getPage(0)) {
+        val shown = if (seq != null && (bubbleDebug || bubbleDock)) seq else emptyList()
+        if (marks != shown) marks = shown
+        markActive = if (shown.isEmpty()) -1 else active
+        if (!bubbleDebug || seq == null) {
             if (debugRects.isNotEmpty()) debugRects = emptyList()
             debugActive = -1
             return
         }
         debugRects = seq.map { it.bounds }
-        val open = bubble
-        debugActive = if (open == null) -1 else seq.indexOfFirst { it === open || it.rect.contentEquals(open.rect) }
+        debugActive = active
+    }
+
+    /** Finding the page's bubbles is under way - shown in the room below the page. */
+    var detecting: Boolean by mutableStateOf(false)
+        private set
+
+    /** Looking for lettering missed at a long press - see [findMissed]. */
+    var searching: Boolean by mutableStateOf(false)
+        private set
+
+    /** A long press found nothing: where, while the reader is asked whether to mark it by hand. */
+    var missPrompt: Offset? by mutableStateOf(null)
+
+    /** Debug mode turned on for one page from [missPrompt], off again when it turns. */
+    private var debugTemporary = false
+
+    /** Debug: a box to start [debugAdding] from, normalised - round a long press, say. */
+    var debugDraft: FloatArray? by mutableStateOf(null)
+
+    // The view of the page below it - see BubbleZoom.drawCamera.
+
+    /**
+     * The view of the page shown below it, docked with [bubbleContext]: (centre x, centre y,
+     * zoom, band top, band bottom), normalised at rest. Moves from bubble to bubble.
+     */
+    @Volatile
+    internal var camera: FloatArray? = null
+        private set
+
+    /** [camera], for drawing over it - see BubbleUi. */
+    var cameraView: FloatArray? by mutableStateOf(null)
+        private set
+
+    private var cameraJob: Job? = null
+
+    /** Debug: how the reader framed a bubble by hand, by page and bounds - centre and zoom. */
+    private val framings = HashMap<String, FloatArray>()
+
+    private fun frameKey(b: BubbleOverlay) = "${System.identityHashCode(b.page)}:${b.bounds.joinToString(",")}"
+
+    /** Whether [b] is shown as a moving view of the page below it rather than lifted off it. */
+    private fun cameraMode(b: BubbleOverlay) = b.docked && bubbleContext
+
+    private fun setCamera(c: FloatArray?) {
+        camera = c
+        cameraView = c
+        invalidate()
+    }
+
+    /** What of the page at rest [c] shows: (x0, y0, x1, y1), normalised. */
+    private fun viewOf(c: FloatArray): FloatArray {
+        val halfX = 0.5f / c[2]
+        val halfY = 0.5f * (c[4] - c[3]) / c[2]
+        return floatArrayOf(c[0] - halfX, c[1] - halfY, c[0] + halfX, c[1] + halfY)
+    }
+
+    /**
+     * Where the view goes to show [b]: zoomed so it fills most of the band - room left round it
+     * for the artwork - and kept on the page. One already in view, at near that zoom, keeps
+     * the view where it is; a framing set by hand in debug mode wins.
+     */
+    private fun frameFor(b: BubbleOverlay, from: FloatArray?): FloatArray? {
+        val dock = dockRegion(b.page) ?: return null
+        val w = width
+        val h = height
+        if (w <= 0 || h <= 0) return null
+        framings[frameKey(b)]?.let { return floatArrayOf(it[0], it[1], it[2], dock[0], dock[1]) }
+        val bw = (b.bounds[2] - b.bounds[0]) * w
+        val bh = (b.bounds[3] - b.bounds[1]) * h
+        if (bw <= 0f || bh <= 0f) return null
+        val dockHeight = (dock[1] - dock[0]) * h
+        val zoom = min(CAMERA_MAX_ZOOM, min(CAMERA_FIT_WIDTH * w / bw, CAMERA_FIT_HEIGHT * dockHeight / bh))
+            .coerceAtLeast(1f)
+        if (from != null && from[2] >= zoom * CAMERA_KEEP) {
+            val v = viewOf(from)
+            if (b.bounds[0] >= v[0] && b.bounds[1] >= v[1] && b.bounds[2] <= v[2] && b.bounds[3] <= v[3]) return from
+        }
+        val pageRect = BubbleZoom.pageRect(b.page, w, h) ?: floatArrayOf(0f, 0f, 1f, 1f)
+        fun keep(center: Float, half: Float, lo: Float, hi: Float) =
+            if (hi - lo <= 2 * half) (lo + hi) * 0.5f else center.coerceIn(lo + half, hi - half)
+        return floatArrayOf(
+            keep((b.bounds[0] + b.bounds[2]) * 0.5f, 0.5f / zoom, pageRect[0], pageRect[2]),
+            keep((b.bounds[1] + b.bounds[3]) * 0.5f, 0.5f * (dock[1] - dock[0]) / zoom, pageRect[1], pageRect[3]),
+            zoom,
+            dock[0],
+            dock[1],
+        )
+    }
+
+    /** Moves the view to [to] - glides there from where it is, or starts there. */
+    private fun moveCamera(to: FloatArray) {
+        val from = camera
+        cameraJob?.cancel()
+        if (from == null || doubleTapZoomMillis <= 1) {
+            setCamera(to)
+            return
+        }
+        cameraJob = scope?.launch {
+            Animatable(0f).animateTo(1f, tween(CAMERA_MOVE_MS, easing = FastOutSlowInEasing)) {
+                val t = value
+                setCamera(
+                    floatArrayOf(
+                        from[0] + (to[0] - from[0]) * t,
+                        from[1] + (to[1] - from[1]) * t,
+                        from[2] * (to[2] / from[2]).pow(t),
+                        to[3],
+                        to[4],
+                    ),
+                )
+            }
+        }
+    }
+
+    /** Debug: the view below the page moved by a drag of [pan] pixels and a pinch of [zoomBy]. */
+    fun debugAdjustFrame(pan: Offset, zoomBy: Float) {
+        val c = camera ?: return
+        if (bubble == null || width <= 0 || height <= 0) return
+        cameraJob?.cancel()
+        val zoom = (c[2] * zoomBy).coerceIn(CAMERA_MIN_ZOOM, CAMERA_LIMIT_ZOOM)
+        setCamera(floatArrayOf(c[0] - pan.x / (zoom * width), c[1] - pan.y / (zoom * height), zoom, c[3], c[4]))
+    }
+
+    /** Debug: the view as adjusted is how the open bubble should be framed - kept and logged. */
+    fun debugCommitFrame() {
+        val c = camera ?: return
+        val b = bubble ?: return
+        framings[frameKey(b)] = c.copyOf(3)
+        val page = b.page
+        val seq = sequence.orEmpty()
+        val at = seq.indexOfFirst { it.rect.contentEquals(b.rect) }
+        logEdit(page, "frame ${at + 1}")
+    }
+
+    /**
+     * A long press where lettering was missed: looked for harder there - see
+     * [BubbleZoom.findMissed] - put in the reading order where it belongs, logged, and opened.
+     * Where nothing is found, [missPrompt] asks whether to mark it by hand.
+     */
+    suspend fun findMissed(tap: Offset): Boolean = withFrameClock {
+        if (!guidedBusy.compareAndSet(false, true)) return@withFrameClock false
+        try {
+            if (pageOffset != 0f) return@withFrameClock false
+            val page = getPage(0) as? ImagePage.ImageSingle ?: return@withFrameClock false
+            val w = width
+            val h = height
+            if (w <= 0 || h <= 0) return@withFrameClock false
+            val dock = dockRegion(page)
+            val context = bubbleContext
+            var stage = ""
+            searching = true
+            val found = try {
+                withContext(Dispatchers.Default) {
+                    runCatching { BubbleZoom.findMissed(page, w, h, tap.x, tap.y, dock, context) { stage = it } }
+                        .onFailure { Log.w("ImageViewerState", "Missed bubble search failed", it) }
+                        .getOrNull()
+                }
+            } finally {
+                searching = false
+            }
+            if (getPage(0) !== page || pageOffset != 0f) return@withFrameClock false
+            if (found == null) {
+                missPrompt = tap
+                return@withFrameClock false
+            }
+            val current = bubble?.takeIf { it.page === page }
+            val seq = (if (current != null) sequenceFor(page, current) else sequenceOf(page)).toMutableList()
+            startDebugLog(page, seq)
+            val existing = seq.firstOrNull { overlap(it.bounds, found.bounds) > 0.6f }
+            val target = existing ?: found.also {
+                val at = BubbleZoom.orderIndex(page, w, h, seq.map { s -> s.bounds }, found.bounds, isReversed)
+                seq.add(at, found)
+                sequence = seq
+                logEdit(page, "long press: found $stage at ${at + 1}")
+            }
+            if (current != null) switchBubble(current, target.fresh()) else open(target.fresh())
+            true
+        } finally {
+            guidedBusy.set(false)
+        }
+    }
+
+    /** How much of the smaller of [a] and [b] (bounds) they share. */
+    private fun overlap(a: FloatArray, b: FloatArray): Float {
+        val ix = max(0f, min(a[2], b[2]) - max(a[0], b[0]))
+        val iy = max(0f, min(a[3], b[3]) - max(a[1], b[1]))
+        val small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+        return if (small <= 0f) 0f else ix * iy / small
+    }
+
+    /** [missPrompt] answered yes: debug mode for this page, a box round the press to adjust. */
+    fun markMissedByHand() {
+        val tap = missPrompt ?: return
+        missPrompt = null
+        if (!bubbleDebug) {
+            bubbleDebug = true
+            debugTemporary = true
+        }
+        debugDraft = floatArrayOf(
+            (tap.x - 0.12f).coerceAtLeast(0f),
+            (tap.y - 0.06f).coerceAtLeast(0f),
+            (tap.x + 0.12f).coerceAtMost(1f),
+            (tap.y + 0.06f).coerceAtMost(1f),
+        )
+        debugAdding = true
+        refreshDebug()
     }
 
     private var bubbleJob: Job? = null
@@ -405,6 +628,15 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
 
     /** Opens [found], closed until now, over its page. */
     private suspend fun open(found: BubbleOverlay) {
+        if (cameraMode(found)) {
+            val frame = frameFor(found, null)
+            if (frame != null) {
+                bubble = found
+                found.progress = 1f
+                moveCamera(frame)
+                return
+            }
+        }
         val w = width
         val h = height
         // Shown at progress 0 - nothing drawn - while it is enlarged, then animated: enlarging
@@ -536,9 +768,32 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             if (getPage(0) !== page || pageOffset != 0f || bubble != null || !page.atHomeScale) return@launch
             if (bubbleAutoOpen) {
                 guidedNext()
-            } else if (bubbleDebug) {
+            } else {
+                // Found now, so they are outlined and the first tap opens one at once.
                 sequenceOf(page)
             }
+        }
+    }
+
+    private var prefetchJob: Job? = null
+
+    /**
+     * The next page's bubbles found ahead of time, while this one is read - the slow part,
+     * cached with its images, so its first bubble opens as soon as it is turned to.
+     */
+    private fun prefetchNext() {
+        if (!bubbleZoomEnabled || !(bubbleGuided || bubbleDock || bubbleDebug)) return
+        val next = getPage(if (isReversed) -1 else 1) as? ImagePage.ImageSingle ?: return
+        val rtl = isReversed
+        prefetchJob?.cancel()
+        prefetchJob = scope?.launch {
+            var waited = 0L
+            while (!inkReady(next) && waited < PREFETCH_WAIT_MS) {
+                delay(INK_POLL_MS)
+                waited += INK_POLL_MS
+            }
+            if (!inkReady(next) || BubbleZoom.isCached(next)) return@launch
+            withContext(Dispatchers.Default) { BubbleZoom.warm(next, rtl) }
         }
     }
 
@@ -561,6 +816,23 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         scope?.launch(Dispatchers.Default) {
             BubbleDebugLog.start(label, rtl, boxes, maps)
             debugLogged = BubbleDebugLog.size
+            // All the lettering the recogniser finds on the page, bubble or not - the starting
+            // point for finding lettering with no bubble round it.
+            val ocr = maps.flatMapIndexed { i, map ->
+                TextCheck.blocks(map, intArrayOf(0, 0, map.width, map.height)).map { b ->
+                    BubbleDebugLog.Ocr(
+                        i,
+                        floatArrayOf(
+                            b.box[0].toFloat() / map.width,
+                            b.box[1].toFloat() / map.height,
+                            b.box[2].toFloat() / map.width,
+                            b.box[3].toFloat() / map.height,
+                        ),
+                        b.text,
+                    )
+                }
+            }
+            BubbleDebugLog.ocr(label, ocr)
         }
     }
 
@@ -569,7 +841,11 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         val h = height
         return list.mapNotNull { b ->
             val (image, bounds) = BubbleZoom.onImage(page, w, h, b.bounds) ?: return@mapNotNull null
-            BubbleDebugLog.Box(image, bounds, b.text, b.manual)
+            val frame = framings[frameKey(b)]?.let { f ->
+                val dock = dockRegion(page) ?: return@let null
+                BubbleZoom.onImage(page, w, h, viewOf(floatArrayOf(f[0], f[1], f[2], dock[0], dock[1])))?.second
+            }
+            BubbleDebugLog.Box(image, bounds, b.text, b.manual, frame)
         }
     }
 
@@ -644,6 +920,12 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     /** Closes the open bubble back into the page. */
     fun dismissBubble() {
         val current = bubble ?: return
+        if (cameraMode(current)) {
+            bubbleJob?.cancel()
+            bubble = null
+            releaseBubble(current)
+            return
+        }
         animateBubble(current, 0f) {
             if (bubble === current) {
                 bubble = null
@@ -700,6 +982,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             ?.let { return it }
         val w = width
         val h = height
+        detecting = !BubbleZoom.isCached(page)
         val found = if (w > 0 && h > 0) {
             withContext(Dispatchers.Default) {
                 runCatching {
@@ -719,9 +1002,11 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         } else {
             emptyList()
         }
+        detecting = false
         sequencePage = page
         sequence = found
         if (bubbleDebug) startDebugLog(page, found)
+        prefetchNext()
         return found
     }
 
@@ -730,6 +1015,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         sequence?.takeIf { sequencePage === page }?.let { return it }
         val w = width
         val h = height
+        detecting = !BubbleZoom.isCached(page)
         val found = if (w > 0 && h > 0) {
             withContext(Dispatchers.Default) {
                 runCatching {
@@ -741,9 +1027,11 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         } else {
             emptyList()
         }
+        detecting = false
         sequencePage = page
         sequence = found
         if (bubbleDebug) startDebugLog(page, found)
+        prefetchNext()
         return found
     }
 
@@ -777,6 +1065,19 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
 
     /** Closes [current] quickly and opens [next] in its place - the next in reading order, or a tapped one. */
     private suspend fun switchBubble(current: BubbleOverlay, next: BubbleOverlay) {
+        if (cameraMode(next)) {
+            // The view glides on to it rather than one bubble closing and the next opening.
+            val frame = frameFor(next, camera.takeIf { cameraMode(current) })
+            if (frame != null) {
+                bubbleJob?.cancel()
+                if (bubble !== current) return
+                bubble = next
+                next.progress = 1f
+                releaseBubble(current)
+                moveCamera(frame)
+                return
+            }
+        }
         val w = width
         val h = height
         // The open one drops back quickly, then the next rises as a fresh one would.
@@ -844,6 +1145,12 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         sequencePage = null
         sequence = null
         debugAdding = false
+        debugDraft = null
+        missPrompt = null
+        if (debugTemporary) {
+            debugTemporary = false
+            bubbleDebug = false
+        }
         guidedDonePage = null
         autoOpenJob?.cancel()
         val current = bubble ?: return
@@ -1037,6 +1344,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             TurnGesture(turnHeld, turnAuto, turnReleaseOffset),
             bubble?.takeIf { offset == 0f && it.page === currentPage },
             bubble?.progress ?: 0f,
+            camera?.takeIf { offset == 0f && bubble?.page === currentPage },
         )
     }
 
@@ -1057,6 +1365,24 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         const val INK_WAIT_STEP_MS = 1000L
         const val INK_WAIT_AUTO_MS = 4000L
         const val INK_POLL_MS = 100L
+
+        /** How long the next page is waited on to decode before it is found ahead of time. */
+        const val PREFETCH_WAIT_MS = 15000L
+
+        /** The view below the page: how much of the band a bubble fills, how far it zooms. */
+        const val CAMERA_FIT_WIDTH = 0.8f
+        const val CAMERA_FIT_HEIGHT = 0.7f
+        const val CAMERA_MAX_ZOOM = 3.5f
+
+        /** A bubble already in view stays put while the view is at least this share of its zoom. */
+        const val CAMERA_KEEP = 0.75f
+
+        /** How long the view takes to glide from one bubble to the next. */
+        const val CAMERA_MOVE_MS = 380
+
+        /** How far a hand framing in debug mode may zoom out and in. */
+        const val CAMERA_MIN_ZOOM = 0.5f
+        const val CAMERA_LIMIT_ZOOM = 8f
     }
 
     private class RenderSnapshot(
@@ -1070,6 +1396,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         val gesture: TurnGesture,
         val bubble: BubbleOverlay?,
         val bubbleProgress: Float,
+        val camera: FloatArray?,
     )
 
     /**
@@ -1140,7 +1467,12 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         }
 
         val covered = page.drawLive(encoder, texture, tiles)
-        s.bubble?.let { BubbleZoom.draw(encoder, texture, it, s.bubbleProgress) }
+        val shownBubble = s.bubble
+        if (s.camera != null && shownBubble != null) {
+            BubbleZoom.drawCamera(encoder, texture, shownBubble.page, s.camera)
+        } else if (shownBubble != null) {
+            BubbleZoom.draw(encoder, texture, shownBubble, s.bubbleProgress)
+        }
 
         // Once the current page's tiles settle, prewarm the next page's, so a transition into it
         // starts mostly sharp. Gated on atHome: the tile cache is keyed by (x, y, scale).

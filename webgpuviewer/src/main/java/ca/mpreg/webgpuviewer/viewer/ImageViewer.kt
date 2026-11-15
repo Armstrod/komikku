@@ -100,11 +100,23 @@ fun ImageViewer(
                     view.parent?.requestDisallowInterceptTouchEvent(true)
                     firstDown.consume()
                     var last = firstDown.position
+                    var lastTime = firstDown.uptimeMillis
                     do {
                         val event = awaitPointerEvent(pass = PointerEventPass.Initial)
                         event.changes.fastForEach { it.consume() }
-                        event.changes.firstOrNull { it.id == firstDown.id }?.let { last = it.position }
+                        event.changes.firstOrNull { it.id == firstDown.id }?.let {
+                            last = it.position
+                            lastTime = it.uptimeMillis
+                        }
                     } while (event.changes.any { it.pressed })
+                    // Held in place: a long press, as on the page with no bubble open - to mark
+                    // lettering the finder missed, say.
+                    val still = (last - firstDown.position).getDistance() <= touchSlop
+                    if (still && lastTime - firstDown.uptimeMillis >= viewConfiguration.longPressTimeoutMillis) {
+                        val at = Offset(firstDown.position.x / state.width, firstDown.position.y / state.height)
+                        state.onLongTap?.invoke(at)
+                        return@awaitEachGesture
+                    }
                     // A swipe down steps to the next bubble - reading runs down the page - and
                     // up to the previous; a tap closes it or opens the one tapped - see
                     // ImageViewerState.

@@ -1049,7 +1049,13 @@ open class WebGpuViewer(
 
             onGuidedSwipe = { step -> guidedStep(step) }
 
-            onLongTap = { offset ->
+            onLongTap = longTap@{ offset ->
+                // Stepping through bubbles, a long press marks lettering the finder missed: it
+                // looks again there, harder - see ImageViewerState.findMissed.
+                if (guidedActive() && !activity.viewModel.state.value.menuVisible) {
+                    this@WebGpuViewer.scope.launch { pager.state.findMissed(offset) }
+                    return@longTap
+                }
                 fun pageMenu() {
                     if (activity.viewModel.state.value.menuVisible || config.longTapEnabled) {
                         (currentPage as? ViewerReaderPage)?.let { activity.onPageLongTap(it.page) }

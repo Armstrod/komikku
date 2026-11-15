@@ -73,6 +73,64 @@ internal object TextCheck {
         }
     }
 
+    /** Lettering the recogniser found: its bounds on the map (x0, y0, x1, y1) and what it read. */
+    class Block(val box: IntArray, val text: String)
+
+    /**
+     * The blocks of lettering the recogniser finds in [window] (x0, y0, x1, y1) of [map] - for
+     * lettering with no bubble round it. Empty where it can't run.
+     */
+    fun blocks(map: InkMap, window: IntArray): List<Block> {
+        if (broken) return emptyList()
+        val x0 = window[0].coerceIn(0, map.width)
+        val y0 = window[1].coerceIn(0, map.height)
+        val w = window[2].coerceIn(x0, map.width) - x0
+        val h = window[3].coerceIn(y0, map.height) - y0
+        if (w <= 0 || h <= 0) return emptyList()
+        return try {
+            val pixels = IntArray(w * h) { i ->
+                val l = map[x0 + i % w, y0 + i / w]
+                (0xFF shl 24) or (l shl 16) or (l shl 8) or l
+            }
+            val small = Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
+            val scale = min(MAX_SCALE, max(1f, BLOCK_MIN_WIDTH.toFloat() / w))
+            val bitmap = if (scale > 1f) {
+                Bitmap.createScaledBitmap(small, (w * scale).toInt(), (h * scale).toInt(), true).also {
+                    if (it !== small) small.recycle()
+                }
+            } else {
+                small
+            }
+            val task = recognizer.process(InputImage.fromBitmap(bitmap, 0))
+            val result = Tasks.await(task, BLOCK_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            bitmap.recycle()
+            result.textBlocks.mapNotNull { block ->
+                val r = block.boundingBox ?: return@mapNotNull null
+                if (!isLettering(block.text)) return@mapNotNull null
+                Block(
+                    intArrayOf(
+                        x0 + (r.left / scale).toInt(),
+                        y0 + (r.top / scale).toInt(),
+                        x0 + (r.right / scale).toInt(),
+                        y0 + (r.bottom / scale).toInt(),
+                    ),
+                    block.text,
+                )
+            }
+        } catch (e: java.util.concurrent.TimeoutException) {
+            emptyList()
+        } catch (e: Exception) {
+            Log.w("TextCheck", "Text recognition failed", e)
+            emptyList()
+        }
+    }
+
+    /** A window searched for lettering is enlarged until at least this wide. */
+    private const val BLOCK_MIN_WIDTH = 640
+
+    /** A window takes longer than one bubble. */
+    private const val BLOCK_TIMEOUT_MS = 4000L
+
     /** The bubble cut from [map], paper outside its shape, enlarged for the recogniser. */
     private fun crop(map: InkMap, found: BubbleDetect.Found): Bitmap? {
         val w = found.width

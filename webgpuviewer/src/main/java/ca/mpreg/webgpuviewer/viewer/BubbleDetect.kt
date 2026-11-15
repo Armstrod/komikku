@@ -39,6 +39,11 @@ internal object BubbleDetect {
     /** Share of its bounds a bubble fills at least - two joined by a neck fill about a third. */
     private const val MIN_FILL = 0.3f
 
+    /** The same three limits, eased for a bubble whose lettering passed the full test. */
+    private const val MIN_FILL_LINED = 0.2f
+    private const val MAX_INK_LINED = 0.6f
+    private const val MIN_COMPACTNESS_LINED = 0.18f
+
     /**
      * Map pixels the shape is closed over before it is measured or cut out: comic lettering
      * often runs into the outline, and each letter that touches it would otherwise bite a notch
@@ -272,15 +277,18 @@ internal object BubbleDetect {
         // Round enough to be a bubble, small enough not to be a panel, and with something
         // written in it - but only lettering, which is in small pieces. A panel's artwork is
         // dense, or has a large piece.
-        if (filledArea < MIN_FILL * bw * bh || filledArea > maxArea) return null
-        val ink = (filledArea - paperArea).toFloat() / filledArea
-        if (ink < MIN_INK || ink > MAX_INK) return null
-        if (largestMark(shape, outside, outW, outH) > MAX_MARK * filledArea) return null
+        if (filledArea > maxArea) return null
         // What is written in it has to look like lettering, not a face, a glove or the rivets on
         // an outlined piece of armour - for the sequence, which tries every patch of paper, and
-        // for a tap as well.
+        // for a tap as well. Clear lines of lettering earn some slack on the shape below: a
+        // spiky shout, or big bold lettering filling its bubble, is still a bubble.
         val lettering = if (letters > 0) lettered(shape, outside, outW, outH, letters, minLetterSize(map)) else STRICT
         if (lettering == NONE) return null
+        val lined = letters > 0 && lettering == STRICT
+        if (filledArea < (if (lined) MIN_FILL_LINED else MIN_FILL) * bw * bh) return null
+        val ink = (filledArea - paperArea).toFloat() / filledArea
+        if (ink < MIN_INK || ink > (if (lined) MAX_INK_LINED else MAX_INK)) return null
+        if (largestMark(shape, outside, outW, outH) > MAX_MARK * filledArea) return null
 
         // Closed over the notches lettering bites out of it, then filled again.
         val solid = BooleanArray(outW * outH) { !outside[it] }
@@ -301,7 +309,7 @@ internal object BubbleDetect {
             }
         }
         val compactness = 64f * closedArea / (Math.PI.toFloat() * edges * edges)
-        if (compactness < MIN_COMPACTNESS) return null
+        if (compactness < (if (lined) MIN_COMPACTNESS_LINED else MIN_COMPACTNESS)) return null
 
         // Grown by the outline.
         val grown = grow(BooleanArray(outW * outH) { !closedOutside[it] }, outW, outH, OUTLINE, dilate = true)

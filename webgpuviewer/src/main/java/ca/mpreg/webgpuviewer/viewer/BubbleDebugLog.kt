@@ -18,7 +18,17 @@ import kotlin.math.roundToInt
  */
 object BubbleDebugLog {
     /** A bubble in the log: which of the page's images, and its bounds as a share of it. */
-    class Box(val image: Int, val bounds: FloatArray, val text: String?, val manual: Boolean)
+    class Box(
+        val image: Int,
+        val bounds: FloatArray,
+        val text: String?,
+        val manual: Boolean,
+        /** How the reader framed it below the page, by hand - the view's bounds on the image. */
+        val frame: FloatArray? = null,
+    )
+
+    /** Lettering text recognition found on a whole page, bubble or not: image, bounds, text. */
+    class Ocr(val image: Int, val bounds: FloatArray, val text: String)
 
     private class PageRecord(
         val label: String,
@@ -29,6 +39,7 @@ object BubbleDebugLog {
     ) {
         var final: List<Box> = found
         val edits = ArrayList<String>()
+        var ocr: List<Ocr> = emptyList()
         var updated = System.currentTimeMillis()
     }
 
@@ -60,6 +71,12 @@ object BubbleDebugLog {
         record.updated = System.currentTimeMillis()
     }
 
+    /** What text recognition read across [label]'s page - to compare the bubbles against. */
+    @Synchronized
+    fun ocr(label: String, blocks: List<Ocr>) {
+        pages[label]?.ocr = blocks
+    }
+
     @Synchronized
     fun clear() = pages.clear()
 
@@ -70,7 +87,7 @@ object BubbleDebugLog {
         val snapshot = synchronized(this) { pages.values.toList() }
         ZipOutputStream(out.outputStream().buffered()).use { zip ->
             val log = JSONObject()
-            log.put("version", 1)
+            log.put("version", 2)
             log.put("exported", System.currentTimeMillis())
             val list = JSONArray()
             snapshot.forEachIndexed { n, record ->
@@ -89,6 +106,20 @@ object BubbleDebugLog {
                         put("found", boxes(record.found))
                         put("final", boxes(record.final))
                         put("edits", JSONArray(record.edits))
+                        put(
+                            "ocr",
+                            JSONArray().apply {
+                                record.ocr.forEach { o ->
+                                    put(
+                                        JSONObject().apply {
+                                            put("image", o.image)
+                                            put("bounds", rounded(o.bounds))
+                                            put("text", o.text)
+                                        },
+                                    )
+                                }
+                            },
+                        )
                         put("corrected", record.edits.isNotEmpty())
                     },
                 )
@@ -107,13 +138,16 @@ object BubbleDebugLog {
                 JSONObject().apply {
                     put("order", order + 1)
                     put("image", box.image)
-                    put("bounds", JSONArray(box.bounds.map { (it * 10000f).roundToInt() / 10000.0 }))
+                    put("bounds", rounded(box.bounds))
                     put("text", box.text ?: JSONObject.NULL)
                     put("manual", box.manual)
+                    box.frame?.let { f -> put("frame", rounded(f)) }
                 },
             )
         }
     }
+
+    private fun rounded(values: FloatArray) = JSONArray(values.map { (it * 10000f).roundToInt() / 10000.0 })
 
     /** [map] as a greyscale JPEG - what detection saw, at its resolution. */
     private fun jpeg(map: InkMap): ByteArray {

@@ -35,6 +35,9 @@ import androidx.webgpu.PrimitiveTopology.Companion.TriangleList
 import androidx.webgpu.StoreOp
 import androidx.webgpu.TextureFormat
 import androidx.webgpu.TextureUsage
+import android.graphics.Bitmap
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import ca.mpreg.webgpuviewer.draw.Draw
 import ca.mpreg.webgpuviewer.draw.rect
 import ca.mpreg.webgpuviewer.renderer.FormatKeyed
@@ -86,7 +89,39 @@ internal class BubbleOverlay(
     val bounds: FloatArray = rect,
     /** Artwork round the bubble shows with it - lettering's clean-up is eased off for it. */
     val context: Boolean = false,
+    /** The bubble's own shape over [bounds], as [mask] is over [rect] - for its outline. */
+    val shape: ByteArray = mask,
+    val shapeWidth: Int = maskWidth,
+    val shapeHeight: Int = maskHeight,
 ) {
+    /** Docked below the page rather than opened over it. */
+    val docked: Boolean get() = dim == 0f
+
+    /** The outline of [shape], white on clear, to be tinted and drawn over [bounds]. */
+    val outlineImage: ImageBitmap by lazy { shapeImage(edge = true) }
+
+    /** [shape] filled, white on clear - to hide a bubble not yet read. */
+    val fillImage: ImageBitmap by lazy { shapeImage(edge = false) }
+
+    private fun shapeImage(edge: Boolean): ImageBitmap {
+        val w = shapeWidth
+        val h = shapeHeight
+        fun inside(x: Int, y: Int) = x in 0 until w && y in 0 until h && (shape[y * w + x].toInt() and 0xFF) >= 128
+        val pixels = IntArray(w * h) { i ->
+            val x = i % w
+            val y = i / w
+            val on = if (edge) {
+                // Inside, with something outside within two pixels: a line a little thicker
+                // than one map pixel, which can be a fraction of a screen pixel.
+                inside(x, y) && (-2..2).any { d -> !inside(x + d, y) || !inside(x, y + d) }
+            } else {
+                inside(x, y)
+            }
+            if (on) -0x1 else 0
+        }
+        return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888).asImageBitmap()
+    }
+
     val centerX: Float get() = (rect[0] + rect[2]) * 0.5f
     val centerY: Float get() = (rect[1] + rect[3]) * 0.5f
 
@@ -157,6 +192,9 @@ internal class BubbleOverlay(
         dim,
         bounds,
         context,
+        shape,
+        shapeWidth,
+        shapeHeight,
     ).also {
         it.text = text
         it.manual = manual
@@ -277,23 +315,21 @@ internal object BubbleZoom {
             }
             val placed = ArrayList<BubbleOverlay>()
             val boxes = ArrayList<IntArray>()
-            for (found in BubbleDetect.findAll(map, openEdge)) {
-                val overlay = overlay(page, screenWidth, screenHeight, image, map, imageRect, found, dock, context)
+            // Found, read and ordered once per image - see [found] - and only placed here.
+            for (item in found(map, openEdge, rightToLeft)) {
+                val overlay = overlay(page, screenWidth, screenHeight, image, map, imageRect, item.found, dock, context)
                     ?: continue
                 // Off screen - the far half of a wide page zoomed to half its width - it can't
                 // be read where it sits.
                 if (overlay.centerX !in 0f..1f || overlay.centerY !in 0f..1f) continue
-                // Read last, being the slowest: hatching or screentone can pass the shape tests.
-                val text = TextCheck.read(map, found)
-                if (!accepted(text, found)) continue
-                overlay.text = text
+                overlay.text = item.text
                 placed += overlay
-                boxes += intArrayOf(found.x0, found.y0, found.x0 + found.width, found.y0 + found.height)
+                boxes += item.box
             }
-            if (include != null && include.centerX >= imageRect[0] && include.centerX < imageRect[2] &&
+            val included = include != null && include.centerX >= imageRect[0] && include.centerX < imageRect[2] &&
                 include.centerY >= imageRect[1] && include.centerY < imageRect[3] &&
                 placed.none { it.bounds.contentEquals(include.bounds) }
-            ) {
+            if (include != null && included) {
                 // Back from screen to map pixels, as the others were placed.
                 val sx = map.width / (imageRect[2] - imageRect[0])
                 val sy = map.height / (imageRect[3] - imageRect[1])
@@ -305,11 +341,216 @@ internal object BubbleZoom {
                     ((include.bounds[3] - imageRect[1]) * sy).toInt(),
                 )
             }
-            pages += BubbleDetect.readingOrder(map, boxes, rightToLeft).map { placed[it] }
+            // Already in order, unless a tapped bubble has to find its place among them.
+            pages += if (included) BubbleDetect.readingOrder(map, boxes, rightToLeft).map { placed[it] } else placed
         }
         // forEachImage walks a spread left side first; a right-to-left book reads the right side first.
         if (rightToLeft) pages.reverse()
         return pages.flatten()
+    }
+
+    /** A bubble found on an image's map, what was read in it, and its bounds there. */
+    class Item(val found: BubbleDetect.Found, val text: String?, val box: IntArray)
+
+    private class Cached(val openEdge: Int, val rightToLeft: Boolean, val items: List<Item>)
+
+    /** Each image's bubbles, found, read and ordered once - by its map, which goes with it. */
+    private val cache = java.util.WeakHashMap<InkMap, Cached>()
+
+    /**
+     * The bubbles on [map] in reading order, each read by text recognition and kept only where
+     * that agrees - the slow part of finding them, cached for the image, so a page found
+     * ahead of time (see [warm]) opens its first bubble at once.
+     */
+    fun found(map: InkMap, openEdge: Int, rightToLeft: Boolean): List<Item> {
+        synchronized(cache) {
+            cache[map]?.takeIf { it.openEdge == openEdge && it.rightToLeft == rightToLeft }?.let { return it.items }
+        }
+        val items = ArrayList<Item>()
+        for (found in BubbleDetect.findAll(map, openEdge)) {
+            // Read last, being the slowest: hatching or screentone can pass the shape tests.
+            val text = TextCheck.read(map, found)
+            if (!accepted(text, found)) continue
+            items += Item(found, text, intArrayOf(found.x0, found.y0, found.x0 + found.width, found.y0 + found.height))
+        }
+        val ordered = BubbleDetect.readingOrder(map, items.map { it.box }, rightToLeft).map { items[it] }
+        synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, ordered) }
+        return ordered
+    }
+
+    /** Whether [page]'s bubbles are all found already - nothing left to wait for. */
+    fun isCached(page: ImagePage.ImageSingle): Boolean {
+        var all = true
+        page.forEachImage { image, _, _ ->
+            val map = image.inkMap
+            if (map == null || synchronized(cache) { cache[map] == null }) all = false
+        }
+        return all
+    }
+
+    /** Finds [page]'s bubbles ahead of time, off the main thread, for [found]'s cache. */
+    fun warm(page: ImagePage.ImageSingle, rightToLeft: Boolean) {
+        page.forEachImage { image, offsetX, _ ->
+            val map = image.inkMap ?: return@forEachImage
+            val openEdge = when {
+                page !is ImagePage.ImageSpread -> BubbleDetect.NO_EDGE
+                offsetX < 0f -> BubbleDetect.RIGHT_EDGE
+                else -> BubbleDetect.LEFT_EDGE
+            }
+            runCatching { found(map, openEdge, rightToLeft) }
+        }
+    }
+
+    /**
+     * A bubble missed at ([tapX], [tapY]), looked for harder after a long press there: first as
+     * a tap would, then with the shape and lettering tests set aside - text recognition alone
+     * deciding - and last as plain lettering with no bubble round it, from the text the
+     * recogniser finds near the press. Null where all three find nothing. [stage] names which
+     * found it, for the log.
+     */
+    fun findMissed(
+        page: ImagePage.ImageSingle,
+        screenWidth: Int,
+        screenHeight: Int,
+        tapX: Float,
+        tapY: Float,
+        dock: FloatArray?,
+        context: Boolean,
+        stage: (String) -> Unit,
+    ): BubbleOverlay? {
+        detect(page, screenWidth, screenHeight, tapX, tapY, dock, context)?.let {
+            stage("bubble")
+            return it
+        }
+        val hit = imageAt(page, screenWidth, screenHeight, tapX, tapY) ?: return null
+        val map = hit.image.inkMap ?: return null
+        val r = hit.rect
+        val mx = ((tapX - r[0]) / (r[2] - r[0]) * map.width).toInt().coerceIn(0, map.width - 1)
+        val my = ((tapY - r[1]) / (r[3] - r[1]) * map.height).toInt().coerceIn(0, map.height - 1)
+        val loose = BubbleDetect.find(map, mx, my, BubbleDetect.NO_EDGE, letters = 0)
+        if (loose != null) {
+            val text = TextCheck.read(map, loose)
+            if (text != null && TextCheck.isLettering(text)) {
+                overlay(page, screenWidth, screenHeight, hit.image, map, r, loose, dock, context)?.let {
+                    it.text = text
+                    stage("loose bubble")
+                    return it
+                }
+            }
+        }
+        // Lettering with no bubble: what the recogniser reads in a window round the press.
+        val half = (TEXT_WINDOW * maxOf(map.width, map.height)).toInt()
+        val window = intArrayOf(
+            (mx - half).coerceAtLeast(0),
+            (my - half).coerceAtLeast(0),
+            (mx + half).coerceAtMost(map.width),
+            (my + half).coerceAtMost(map.height),
+        )
+        val blocks = TextCheck.blocks(map, window)
+        val block = blocks.minByOrNull { b ->
+            val dx = maxOf(b.box[0] - mx, 0, mx - b.box[2])
+            val dy = maxOf(b.box[1] - my, 0, my - b.box[3])
+            dx * dx + dy * dy
+        } ?: return null
+        // Room round the lettering, as a caption box would leave.
+        val padX = ((block.box[2] - block.box[0]) * 0.12f).toInt() + 2
+        val padY = ((block.box[3] - block.box[1]) * 0.12f).toInt() + 2
+        val sx = (r[2] - r[0]) / map.width
+        val sy = (r[3] - r[1]) / map.height
+        val rect = floatArrayOf(
+            r[0] + (block.box[0] - padX) * sx,
+            r[1] + (block.box[1] - padY) * sy,
+            r[0] + (block.box[2] + padX) * sx,
+            r[1] + (block.box[3] + padY) * sy,
+        )
+        return manual(page, screenWidth, screenHeight, rect, dock, context)?.also {
+            it.text = block.text
+            it.manual = false
+            stage("text")
+        }
+    }
+
+    /** Half the side of the window searched for lettering round a long press, as a share of the page. */
+    private const val TEXT_WINDOW = 0.18f
+
+    /**
+     * Where a bubble at [added] (bounds on screen) goes among [existing] ones in reading order,
+     * as found on [page]'s first image - so one found later slots in where the finder would
+     * have put it.
+     */
+    fun orderIndex(
+        page: ImagePage.ImageSingle,
+        screenWidth: Int,
+        screenHeight: Int,
+        existing: List<FloatArray>,
+        added: FloatArray,
+        rightToLeft: Boolean,
+    ): Int {
+        var map: InkMap? = null
+        var rect: FloatArray? = null
+        page.forEachImage { image, offsetX, imageScale ->
+            if (map != null) return@forEachImage
+            val m = image.inkMap ?: return@forEachImage
+            map = m
+            val placeX = (page.x + offsetX / screenWidth + WebGpuRenderer.offsetX) / imageScale -
+                WebGpuRenderer.offsetX
+            val placeY = (page.y + WebGpuRenderer.offsetY) / imageScale - WebGpuRenderer.offsetY
+            rect = image.placement(screenWidth, screenHeight, placeX, placeY, page.scale * imageScale)
+        }
+        val m = map ?: return existing.size
+        val r = rect ?: return existing.size
+        fun box(b: FloatArray) = intArrayOf(
+            ((b[0] - r[0]) / (r[2] - r[0]) * m.width).toInt(),
+            ((b[1] - r[1]) / (r[3] - r[1]) * m.height).toInt(),
+            ((b[2] - r[0]) / (r[2] - r[0]) * m.width).toInt(),
+            ((b[3] - r[1]) / (r[3] - r[1]) * m.height).toInt(),
+        )
+        val boxes = existing.map(::box) + listOf(box(added))
+        val order = BubbleDetect.readingOrder(m, boxes, rightToLeft)
+        // As many of the existing as read before it.
+        return order.indexOf(existing.size).coerceAtLeast(0).let { at -> order.take(at).count { it < existing.size } }
+    }
+
+    /**
+     * Draws the band below the page as a view of it: [camera] is (centre x, centre y, zoom,
+     * band top, band bottom) - the page point at the band's centre, normalised at rest, how much
+     * larger it is shown, and the band itself. Clipped to the band, over the frame's own page.
+     */
+    fun drawCamera(encoder: GPUCommandEncoder, dst: GPUTexture, page: ImagePage.ImageSingle, camera: FloatArray) {
+        if (page.destroyed || page.scale <= 0f) return
+        val w = dst.width
+        val h = dst.height
+        val top = (camera[3] * h).toInt().coerceIn(0, h)
+        val bottom = (camera[4] * h).toInt().coerceIn(top, h)
+        if (bottom <= top) return
+        Draw.rect(encoder, dst, 0f, camera[3], 1f, camera[4], 0xFF000000.toInt())
+        val zoom = camera[2]
+        val s0 = page.scale
+        // The rest point (cx, cy) lands at the band's centre: solved per axis, as drawCrop does
+        // for a target the screen's own size.
+        val qx = 0.5f * w
+        val qy = (top + bottom) * 0.5f
+        val dx = (qx - zoom * camera[0] * w - 0.5f * w + 0.5f * zoom * w) / (s0 * zoom * w)
+        val dy = (qy - zoom * camera[1] * h - 0.5f * h + 0.5f * zoom * h) / (s0 * zoom * h)
+        val view = dst.createView()
+        val pass = encoder.beginRenderPass(
+            GPURenderPassDescriptor(
+                colorAttachments = arrayOf(
+                    GPURenderPassColorAttachment(
+                        view = view,
+                        loadOp = LoadOp.Load,
+                        storeOp = StoreOp.Store,
+                        clearValue = GPUColor(0.0, 0.0, 0.0, 0.0),
+                    ),
+                ),
+            ),
+        )
+        try {
+            pass.setScissorRect(0, top, w, bottom - top)
+            page.renderPage(pass, dst, dx, dy, zoom, linear = true, masked = false)
+        } finally {
+            pass.endAndRelease(view)
+        }
     }
 
     /** As [detect]'s tail: the bubble [found] on [image], placed at [imageRect], as an overlay. */
@@ -461,6 +702,9 @@ internal object BubbleZoom {
                     dim = 0f,
                     bounds = rect,
                     context = true,
+                    shape = mask,
+                    shapeWidth = maskWidth,
+                    shapeHeight = maskHeight,
                 )
             }
             if (docked >= DOCK_MIN_ZOOM) {
@@ -568,6 +812,24 @@ internal object BubbleZoom {
             }
         }
         return hit
+    }
+
+    /** The bounds on screen of [page]'s images where they sit now, together, normalised. */
+    fun pageRect(page: ImagePage.ImageSingle, screenWidth: Int, screenHeight: Int): FloatArray? {
+        var out: FloatArray? = null
+        page.forEachImage { image, offsetX, imageScale ->
+            val placeX = (page.x + offsetX / screenWidth + WebGpuRenderer.offsetX) / imageScale -
+                WebGpuRenderer.offsetX
+            val placeY = (page.y + WebGpuRenderer.offsetY) / imageScale - WebGpuRenderer.offsetY
+            val r = image.placement(screenWidth, screenHeight, placeX, placeY, page.scale * imageScale)
+            val o = out
+            out = if (o == null) {
+                r.copyOf()
+            } else {
+                floatArrayOf(min(o[0], r[0]), min(o[1], r[1]), max(o[2], r[2]), max(o[3], r[3]))
+            }
+        }
+        return out
     }
 
     /**
