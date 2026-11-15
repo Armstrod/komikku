@@ -708,6 +708,59 @@ internal object BubbleDetect {
         return out
     }
 
+    /** [gutters], for [panelAround] - found once for a page's bubbles. */
+    fun gutterMap(map: InkMap): BooleanArray = gutters(map)
+
+    /** Panels larger than this share of the page are the page, not a panel - no panel then. */
+    private const val MAX_PANEL = 0.5f
+
+    /**
+     * The panel round [box] (x0, y0, x1, y1): what its middle reaches without crossing a
+     * [gutter], by its bounds - a bubble reaches the panel's artwork through its own outline.
+     * Null where that is most of the page - no panel borders to stop it.
+     */
+    fun panelAround(map: InkMap, gutter: BooleanArray, box: IntArray): IntArray? {
+        val w = map.width
+        val h = map.height
+        val x = ((box[0] + box[2]) / 2).coerceIn(0, w - 1)
+        val y = ((box[1] + box[3]) / 2).coerceIn(0, h - 1)
+        val start = y * w + x
+        if (gutter[start]) return null
+        val inside = BooleanArray(w * h)
+        val queue = IntArray(w * h)
+        var head = 0
+        var tail = 0
+        inside[start] = true
+        queue[tail++] = start
+        var x0 = x
+        var x1 = x
+        var y0 = y
+        var y1 = y
+        val limit = (MAX_PANEL * w * h).toInt()
+        while (head < tail) {
+            val i = queue[head++]
+            val px = i % w
+            val py = i / w
+            if (px < x0) x0 = px
+            if (px > x1) x1 = px
+            if (py < y0) y0 = py
+            if (py > y1) y1 = py
+            for (n in intArrayOf(
+                if (px > 0) i - 1 else -1,
+                if (px < w - 1) i + 1 else -1,
+                if (py > 0) i - w else -1,
+                if (py < h - 1) i + w else -1,
+            )) {
+                if (n < 0 || inside[n] || gutter[n]) continue
+                if (tail >= limit) return null
+                inside[n] = true
+                queue[tail++] = n
+            }
+        }
+        if ((x1 - x0 + 1).toLong() * (y1 - y0 + 1) > MAX_PANEL * w * h) return null
+        return intArrayOf(min(x0, box[0]), min(y0, box[1]), max(x1 + 1, box[2]), max(y1 + 1, box[3]))
+    }
+
     /** The paper reachable from the page's edges, one flag per map pixel - its gutters. */
     private fun gutters(map: InkMap): BooleanArray {
         val w = map.width

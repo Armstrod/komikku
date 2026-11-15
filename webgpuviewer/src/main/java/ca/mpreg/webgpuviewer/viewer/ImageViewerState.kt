@@ -470,11 +470,21 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             if (b.bounds[0] >= v[0] && b.bounds[1] >= v[1] && b.bounds[2] <= v[2] && b.bounds[3] <= v[3]) return from
         }
         val pageRect = BubbleZoom.pageRect(b.page, w, h) ?: floatArrayOf(0f, 0f, 1f, 1f)
+        // Kept within [lo, hi] where it fits, else centred on them.
         fun keep(center: Float, half: Float, lo: Float, hi: Float) =
             if (hi - lo <= 2 * half) (lo + hi) * 0.5f else center.coerceIn(lo + half, hi - half)
+        // Aimed at its panel's middle, as far as the bubble stays in view - as much of the
+        // panel as the zoom allows, the way frames set by hand in debug mode came out.
+        fun aim(target: Float, lo: Float, hi: Float, half: Float) =
+            if (hi - lo >= 2 * half) (lo + hi) * 0.5f else target.coerceIn(hi - half, lo + half)
+        val halfX = 0.5f / zoom
+        val halfY = 0.5f * (dock[1] - dock[0]) / zoom
+        val panel = b.panel
+        val targetX = panel?.let { (it[0] + it[2]) * 0.5f } ?: ((b.bounds[0] + b.bounds[2]) * 0.5f)
+        val targetY = panel?.let { (it[1] + it[3]) * 0.5f } ?: ((b.bounds[1] + b.bounds[3]) * 0.5f)
         return floatArrayOf(
-            keep((b.bounds[0] + b.bounds[2]) * 0.5f, 0.5f / zoom, pageRect[0], pageRect[2]),
-            keep((b.bounds[1] + b.bounds[3]) * 0.5f, 0.5f * (dock[1] - dock[0]) / zoom, pageRect[1], pageRect[3]),
+            keep(aim(targetX, b.bounds[0], b.bounds[2], halfX), halfX, pageRect[0], pageRect[2]),
+            keep(aim(targetY, b.bounds[1], b.bounds[3], halfY), halfY, pageRect[1], pageRect[3]),
             zoom,
             dock[0],
             dock[1],

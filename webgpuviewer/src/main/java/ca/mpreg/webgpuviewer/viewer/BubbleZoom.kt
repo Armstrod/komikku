@@ -135,6 +135,9 @@ internal class BubbleOverlay(
     /** Drawn by hand in debug mode, not found. */
     var manual: Boolean = false
 
+    /** The panel it is in, on screen normalised - what the view below the page aims to show. */
+    var panel: FloatArray? = null
+
     // Render thread only, like everything below.
     private var maskTexture: GPUTexture? = null
     private var maskView: GPUTextureView? = null
@@ -198,6 +201,7 @@ internal class BubbleOverlay(
     ).also {
         it.text = text
         it.manual = manual
+        it.panel = panel
     }
 
     /** On the render thread. */
@@ -323,6 +327,16 @@ internal object BubbleZoom {
                 // be read where it sits.
                 if (overlay.centerX !in 0f..1f || overlay.centerY !in 0f..1f) continue
                 overlay.text = item.text
+                overlay.panel = item.panel?.let { p ->
+                    val sx = (imageRect[2] - imageRect[0]) / map.width
+                    val sy = (imageRect[3] - imageRect[1]) / map.height
+                    floatArrayOf(
+                        imageRect[0] + p[0] * sx,
+                        imageRect[1] + p[1] * sy,
+                        imageRect[0] + p[2] * sx,
+                        imageRect[1] + p[3] * sy,
+                    )
+                }
                 placed += overlay
                 boxes += item.box
             }
@@ -350,7 +364,13 @@ internal object BubbleZoom {
     }
 
     /** A bubble found on an image's map, what was read in it, and its bounds there. */
-    class Item(val found: BubbleDetect.Found, val text: String?, val box: IntArray)
+    class Item(
+        val found: BubbleDetect.Found,
+        val text: String?,
+        val box: IntArray,
+        /** The panel round it on the map (x0, y0, x1, y1) - framed with it below the page. */
+        var panel: IntArray? = null,
+    )
 
     private class Cached(val openEdge: Int, val rightToLeft: Boolean, val items: List<Item>)
 
@@ -373,9 +393,65 @@ internal object BubbleZoom {
             if (!accepted(text, found)) continue
             items += Item(found, text, intArrayOf(found.x0, found.y0, found.x0 + found.width, found.y0 + found.height))
         }
+        // Lettering with no bubble round it - captions on the artwork, sound effects, spiky
+        // shouts the shape tests turn away: what text recognition reads across the whole page
+        // that no bubble found already holds.
+        for (caption in captions(map, items.map { it.box })) items += caption
+        val gutters = BubbleDetect.gutterMap(map)
+        for (item in items) item.panel = BubbleDetect.panelAround(map, gutters, item.box)
         val ordered = BubbleDetect.readingOrder(map, items.map { it.box }, rightToLeft).map { items[it] }
         synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, ordered) }
         return ordered
+    }
+
+    /**
+     * Lettering text recognition reads on [map] outside every bubble [taken] already: blocks
+     * near each other joined into one, each kept where it reads as words, as a box round it.
+     */
+    private fun captions(map: InkMap, taken: List<IntArray>): List<Item> {
+        val blocks = TextCheck.blocks(map, intArrayOf(0, 0, map.width, map.height))
+            .filter { TextCheck.isWords(it.text) }
+            .map { it.box.copyOf() to it.text }
+            .toMutableList()
+        // Join blocks that touch once grown by half a line - one caption the recogniser split.
+        var joined = true
+        while (joined) {
+            joined = false
+            outer@ for (i in blocks.indices) {
+                for (j in i + 1 until blocks.size) {
+                    val a = blocks[i].first
+                    val b = blocks[j].first
+                    val grow = 0.5f * min(a[3] - a[1], b[3] - b[1])
+                    if (a[0] - grow < b[2] && b[0] - grow < a[2] && a[1] - grow < b[3] && b[1] - grow < a[3]) {
+                        val box = intArrayOf(min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+                        blocks[i] = box to blocks[i].second + "\n" + blocks[j].second
+                        blocks.removeAt(j)
+                        joined = true
+                        break@outer
+                    }
+                }
+            }
+        }
+        fun covered(box: IntArray) = taken.any { t ->
+            val ix = max(0, min(t[2], box[2]) - max(t[0], box[0]))
+            val iy = max(0, min(t[3], box[3]) - max(t[1], box[1]))
+            ix.toFloat() * iy > 0.5f * (box[2] - box[0]) * (box[3] - box[1])
+        }
+        return blocks.filter { !covered(it.first) }.map { (b, text) ->
+            // Room round the lettering, as a caption box would leave.
+            val padX = ((b[2] - b[0]) * 0.12f).toInt() + 2
+            val padY = ((b[3] - b[1]) * 0.12f).toInt() + 2
+            val box = intArrayOf(
+                (b[0] - padX).coerceAtLeast(0),
+                (b[1] - padY).coerceAtLeast(0),
+                (b[2] + padX).coerceAtMost(map.width),
+                (b[3] + padY).coerceAtMost(map.height),
+            )
+            val w = box[2] - box[0]
+            val h = box[3] - box[1]
+            val found = BubbleDetect.Found(box[0], box[1], w, h, ByteArray(w * h) { 0xFF.toByte() })
+            Item(found, text, box)
+        }
     }
 
     /** Whether [page]'s bubbles are all found already - nothing left to wait for. */
