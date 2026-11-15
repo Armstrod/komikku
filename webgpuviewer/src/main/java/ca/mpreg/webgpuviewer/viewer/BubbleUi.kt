@@ -97,7 +97,7 @@ internal fun BubbleUi(state: ImageViewerState) {
                 )
             }
             // In the view below the page, the bubbles still to come are hidden until reached.
-            if (camera != null && active >= 0) {
+            if (camera != null && active >= 0 && state.hideUpcoming) {
                 clipRect(top = camera[3] * size.height, bottom = camera[4] * size.height) {
                     for (i in active + 1 until marks.size) {
                         val b = marks[i].bounds

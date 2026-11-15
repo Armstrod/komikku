@@ -69,7 +69,7 @@ class BubbleScanJob(context: Context, params: WorkerParameters) : CoroutineWorke
                     loader.loadPage(page)
                     val open = page.stream ?: continue
                     runCatching {
-                        withContext(Dispatchers.Default) { scan(open, key) }
+                        withContext(Dispatchers.Default) { scanPage(open, key) }
                     }.onFailure { logcat(LogPriority.WARN, it) { "Bubble scan failed: $key" } }
                 }
                 if (done) BubbleScanStore.markDownloaded(mangaId, chapter.id, pages.size)
@@ -82,35 +82,40 @@ class BubbleScanJob(context: Context, params: WorkerParameters) : CoroutineWorke
         return Result.success()
     }
 
-    /** Decodes the page as the reader would see it - no larger than needed - and finds its bubbles. */
-    private fun scan(open: () -> java.io.InputStream, key: String) {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        open().use { BitmapFactory.decodeStream(it, null, bounds) }
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return
-        // Halved while it stays larger than the finder's map - it only needs that much.
-        var sample = 1
-        while (max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= MAP_SIDE) sample *= 2
-        val options = BitmapFactory.Options().apply {
-            inSampleSize = sample
-            inPreferredConfig = Bitmap.Config.ARGB_8888
-        }
-        val bitmap = open().use { BitmapFactory.decodeStream(it, null, options) } ?: return
-        try {
-            val pixels = ByteBuffer.allocateDirect(bitmap.byteCount)
-            bitmap.copyPixelsToBuffer(pixels)
-            pixels.rewind()
-            BubbleScan.scan(pixels, bitmap.width, bitmap.height, key)
-        } finally {
-            bitmap.recycle()
-        }
-    }
-
     companion object {
         private const val KEY_MANGA = "manga"
         private const val KEY_CHAPTERS = "chapters"
 
         /** The finder's map is this large on its long side - see InkMap. */
         private const val MAP_SIDE = 1280
+
+        /**
+         * Decodes a page as the reader would see it - no larger than needed - finds its bubbles
+         * and keeps them under [key]. Slow: off the main thread. False where it couldn't be
+         * decoded.
+         */
+        fun scanPage(open: () -> java.io.InputStream, key: String, rightToLeft: Boolean = true): Boolean {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            open().use { BitmapFactory.decodeStream(it, null, bounds) }
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return false
+            // Halved while it stays larger than the finder's map - it only needs that much.
+            var sample = 1
+            while (max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= MAP_SIDE) sample *= 2
+            val options = BitmapFactory.Options().apply {
+                inSampleSize = sample
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            val bitmap = open().use { BitmapFactory.decodeStream(it, null, options) } ?: return false
+            try {
+                val pixels = ByteBuffer.allocateDirect(bitmap.byteCount)
+                bitmap.copyPixelsToBuffer(pixels)
+                pixels.rewind()
+                BubbleScan.scan(pixels, bitmap.width, bitmap.height, key, rightToLeft)
+            } finally {
+                bitmap.recycle()
+            }
+            return true
+        }
 
         private fun wanted(prefs: ReaderPreferences): Boolean =
             prefs.bubbleZoom().get() && (prefs.bubbleGuided().get() || prefs.bubbleDock().get())

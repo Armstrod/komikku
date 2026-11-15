@@ -290,6 +290,9 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
      */
     var showPanel: Boolean = true
 
+    /** In the view below the page, bubbles not read yet are hidden until stepped to. */
+    var hideUpcoming: Boolean by mutableStateOf(true)
+
     /** Docked below the page, a bubble shows with the artwork round it rather than cut out. */
     var bubbleContext: Boolean = true
 

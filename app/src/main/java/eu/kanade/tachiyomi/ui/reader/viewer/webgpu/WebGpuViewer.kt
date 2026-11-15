@@ -72,6 +72,7 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.takeWhile
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import logcat.LogPriority
@@ -1093,6 +1094,7 @@ open class WebGpuViewer(
             bubbleZoomApplied = true
             pager.state.bubbleContext = config.bubbleContext
             pager.state.showPanel = config.bubbleShowPanel
+            pager.state.hideUpcoming = config.bubbleHideUpcoming
             // Tenths of a millimetre to screen pixels, by the display's own density.
             pager.state.minLetterPx = config.bubbleMinTextHeight / 10f / MM_PER_INCH *
                 activity.resources.displayMetrics.ydpi
@@ -1944,6 +1946,7 @@ open class WebGpuViewer(
         // not in init: [scanKeyOf] is declared below it.
         BubbleScan.store = BubbleScanStore
         BubbleScan.keyOf = scanKeyOf
+        scanAhead()
         // The manga's downloaded chapters scanned for bubbles while the device has room to spare.
         activity.viewModel.manga?.id?.let { mangaId ->
             if (scanQueuedFor != mangaId) {
@@ -2079,6 +2082,55 @@ open class WebGpuViewer(
     }
 
     // KMK -->
+    private var scanAheadJob: Job? = null
+
+    /** Pages ahead that couldn't be decoded for a scan, not tried again. */
+    private val scanAheadFailed = HashSet<String>()
+
+    /**
+     * While the reader is open, the pages ahead of the one read are scanned for bubbles as soon
+     * as their images arrive - read from the source or from downloads, in the library or not -
+     * nearest first, and kept, so turning to them finds their bubbles ready.
+     */
+    private fun scanAhead() {
+        if (scanAheadJob?.isActive == true) return
+        scanAheadJob = scope.launch {
+            while (isActive) {
+                val state = pager.state
+                val wanted = state.bubbleZoomEnabled && (state.bubbleGuided || state.bubbleDock)
+                val next = if (wanted && !isContinuous) nextToScan() else null
+                if (next == null) {
+                    delay(SCAN_AHEAD_IDLE_MS)
+                    continue
+                }
+                val (key, open) = next
+                val rtl = state.isReversed
+                val ok = withContext(Dispatchers.Default) {
+                    runCatching { BubbleScanJob.scanPage(open, key, rtl) }.getOrDefault(false)
+                }
+                if (!ok) scanAheadFailed += key
+            }
+        }
+    }
+
+    /** The nearest page ahead, within [SCAN_AHEAD_PAGES], whose image is here and not yet scanned. */
+    private fun nextToScan(): Pair<String, () -> java.io.InputStream>? {
+        val mangaId = activity.viewModel.manga?.id ?: return null
+        val current = (currentPage as? ViewerReaderPage)?.page ?: return null
+        val chapter = runCatching { current.chapter }.getOrNull() ?: return null
+        val chapterId = chapter.chapter.id ?: return null
+        val pages = chapter.pages ?: return null
+        for (i in current.index + 1..min(current.index + SCAN_AHEAD_PAGES, pages.lastIndex)) {
+            val page = pages[i]
+            if (page.status != Page.State.Ready) continue
+            val open = page.stream ?: continue
+            val key = BubbleScanStore.key(mangaId, chapterId, page.index)
+            if (key in scanAheadFailed || BubbleScanStore.has(key)) continue
+            return key to open
+        }
+        return null
+    }
+
     /** The manga whose downloaded chapters were last queued for a bubble scan. */
     private var scanQueuedFor: Long? = null
 
@@ -2319,3 +2371,9 @@ open class WebGpuViewer(
 private const val DOCK_BACK_ZONE = 0.33f
 
 private const val MM_PER_INCH = 25.4f
+
+/** How far ahead of the page read the reader scans pages for bubbles. */
+private const val SCAN_AHEAD_PAGES = 12
+
+/** How long the scan ahead waits for more pages to arrive when none are ready. */
+private const val SCAN_AHEAD_IDLE_MS = 1500L

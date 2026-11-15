@@ -101,6 +101,9 @@ class WebGpuConfig(
     var bubbleShowPanel = true
         private set
 
+    var bubbleHideUpcoming = true
+        private set
+
     /** Either bubble zoom setting changed. */
     var bubbleZoomChangedListener: (() -> Unit)? = null
 
@@ -235,6 +238,10 @@ class WebGpuConfig(
         )
         readerPreferences.bubbleDock().register(
             { bubbleDock = it },
+            { bubbleZoomChangedListener?.invoke() },
+        )
+        readerPreferences.bubbleHideUpcoming().register(
+            { bubbleHideUpcoming = it },
             { bubbleZoomChangedListener?.invoke() },
         )
         readerPreferences.bubbleShowPanel().register(

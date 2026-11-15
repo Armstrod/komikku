@@ -267,6 +267,8 @@
     <string name="pref_bubble_min_text_off">Off</string>
     <string name="pref_bubble_show_panel">Zoom out to show the panel</string>
     <string name="pref_bubble_show_panel_summary">Where the text is larger than the minimum height, the view zooms out to show more of the bubble\'s panel, down to the minimum</string>
+    <string name="pref_bubble_hide_upcoming">Hide upcoming bubbles</string>
+    <string name="pref_bubble_hide_upcoming_summary">In the view below the page, bubbles not read yet are blacked out until you step to them</string>
     <string name="pref_bubble_debug">Bubble debug mode</string>
     <string name="pref_bubble_debug_summary">Outline and number every bubble found, correct the order, delete or add bubbles, and export a log of the pages and corrections</string>
     <string name="pref_panel_zoom">Zoom to panel</string>

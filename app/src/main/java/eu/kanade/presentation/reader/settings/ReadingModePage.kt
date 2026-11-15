@@ -277,6 +277,10 @@ private fun ColumnScope.WebGpuViewerSettings(screenModel: ReaderSettingsScreenMo
                 pref = screenModel.preferences.bubbleShowPanel(),
             )
             CheckboxItem(
+                label = stringResource(KMR.strings.pref_bubble_hide_upcoming),
+                pref = screenModel.preferences.bubbleHideUpcoming(),
+            )
+            CheckboxItem(
                 label = stringResource(KMR.strings.pref_bubble_debug),
                 pref = screenModel.preferences.bubbleDebug(),
             )

@@ -245,6 +245,9 @@ class ReaderPreferences(
     /** The page rests at the top of the screen and bubbles open enlarged in the room below. */
     fun bubbleDock() = preferenceStore.getBoolean("webgpu_bubble_dock", false)
 
+    /** In the view below the page, bubbles not read yet are hidden until stepped to. */
+    fun bubbleHideUpcoming() = preferenceStore.getBoolean("webgpu_bubble_hide_upcoming", true)
+
     /** Lettering larger than the least needed: the view below the page zooms out to show its panel. */
     fun bubbleShowPanel() = preferenceStore.getBoolean("webgpu_bubble_show_panel", true)
 
