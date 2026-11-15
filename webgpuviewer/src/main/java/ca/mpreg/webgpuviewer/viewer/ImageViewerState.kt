@@ -276,6 +276,9 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
      */
     var bubbleGuided: Boolean = false
 
+    /** Docked below the page, a bubble shows with the artwork round it rather than cut out. */
+    var bubbleContext: Boolean = true
+
     /** With [bubbleGuided], a page turned to opens its first bubble by itself. */
     var bubbleAutoOpen: Boolean = false
 
@@ -318,7 +321,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         private set(value) {
             field = value
             // Docked below the page, where it came from is outlined on the page - see BubbleUi.
-            outlineRect = value?.takeIf { it.dim == 0f }?.rect
+            outlineRect = value?.takeIf { it.dim == 0f }?.bounds
             publishDebug()
         }
 
@@ -368,7 +371,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             debugActive = -1
             return
         }
-        debugRects = seq.map { it.rect }
+        debugRects = seq.map { it.bounds }
         val open = bubble
         debugActive = if (open == null) -1 else seq.indexOfFirst { it === open || it.rect.contentEquals(open.rect) }
     }
@@ -390,7 +393,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         val h = height
         if (w <= 0 || h <= 0) return false
         val found = withContext(Dispatchers.Default) {
-            runCatching { BubbleZoom.detect(page, w, h, tap.x, tap.y, dockRegion(page)) }
+            runCatching { BubbleZoom.detect(page, w, h, tap.x, tap.y, dockRegion(page), bubbleContext) }
                 .onFailure { Log.w("ImageViewerState", "Bubble detection failed", it) }
                 .getOrNull()
         } ?: return false
@@ -565,7 +568,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         val w = width
         val h = height
         return list.mapNotNull { b ->
-            val (image, bounds) = BubbleZoom.onImage(page, w, h, b.rect) ?: return@mapNotNull null
+            val (image, bounds) = BubbleZoom.onImage(page, w, h, b.bounds) ?: return@mapNotNull null
             BubbleDebugLog.Box(image, bounds, b.text, b.manual)
         }
     }
@@ -625,7 +628,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             val w = width
             val h = height
             if (w <= 0 || h <= 0) return@withFrameClock
-            val added = BubbleZoom.manual(page, w, h, rect, dockRegion(page)) ?: return@withFrameClock
+            val added = BubbleZoom.manual(page, w, h, rect, dockRegion(page), bubbleContext) ?: return@withFrameClock
             val current = bubble?.takeIf { it.page === page }
             val seq = (if (current != null) sequenceFor(page, current) else sequenceOf(page)).toMutableList()
             val at = if (current != null) indexIn(seq, current) + 1 else seq.size
@@ -668,7 +671,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         val h = height
         val found = if (w > 0 && h > 0) {
             withContext(Dispatchers.Default) {
-                runCatching { BubbleZoom.detect(page, w, h, tap.x, tap.y, dockRegion(page)) }
+                runCatching { BubbleZoom.detect(page, w, h, tap.x, tap.y, dockRegion(page), bubbleContext) }
                     .onFailure { Log.w("ImageViewerState", "Bubble detection failed", it) }
                     .getOrNull()
             }
@@ -699,7 +702,17 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         val h = height
         val found = if (w > 0 && h > 0) {
             withContext(Dispatchers.Default) {
-                runCatching { BubbleZoom.detectAll(page, w, h, isReversed, include = current, dock = dockRegion(page)) }
+                runCatching {
+                    BubbleZoom.detectAll(
+                        page,
+                        w,
+                        h,
+                        isReversed,
+                        include = current,
+                        dock = dockRegion(page),
+                        context = bubbleContext,
+                    )
+                }
                     .onFailure { Log.w("ImageViewerState", "Bubble sequence failed", it) }
                     .getOrDefault(emptyList())
             }
@@ -719,7 +732,9 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         val h = height
         val found = if (w > 0 && h > 0) {
             withContext(Dispatchers.Default) {
-                runCatching { BubbleZoom.detectAll(page, w, h, isReversed, dock = dockRegion(page)) }
+                runCatching {
+                    BubbleZoom.detectAll(page, w, h, isReversed, dock = dockRegion(page), context = bubbleContext)
+                }
                     .onFailure { Log.w("ImageViewerState", "Bubble sequence failed", it) }
                     .getOrDefault(emptyList())
             }

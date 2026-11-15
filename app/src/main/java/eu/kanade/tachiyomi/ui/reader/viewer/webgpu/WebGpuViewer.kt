@@ -1082,6 +1082,7 @@ open class WebGpuViewer(
             // Every page rests somewhere else now: rebuilt, as for any change to how they sit.
             if (dockChanged && bubbleZoomApplied) config.imagePropertyChangedListener?.invoke()
             bubbleZoomApplied = true
+            pager.state.bubbleContext = config.bubbleContext
             val debug = config.bubbleZoom && config.bubbleDebug
             if (pager.state.bubbleDebug != debug) {
                 pager.state.bubbleDebug = debug

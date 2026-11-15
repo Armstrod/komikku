@@ -260,6 +260,8 @@
     <string name="pref_bubble_auto_open_summary">A page turned to opens its first speech bubble by itself</string>
     <string name="pref_bubble_dock">Show bubbles below the page</string>
     <string name="pref_bubble_dock_summary">The page sits at the top of the screen and bubbles open enlarged in the space below. Tap there for the next bubble; tap the page to turn it</string>
+    <string name="pref_bubble_context">Show artwork around bubbles</string>
+    <string name="pref_bubble_context_summary">Bubbles shown below the page come with the artwork around them, filling the space, rather than cut out</string>
     <string name="pref_bubble_debug">Bubble debug mode</string>
     <string name="pref_bubble_debug_summary">Outline and number every bubble found, correct the order, delete or add bubbles, and export a log of the pages and corrections</string>
     <string name="pref_panel_zoom">Zoom to panel</string>

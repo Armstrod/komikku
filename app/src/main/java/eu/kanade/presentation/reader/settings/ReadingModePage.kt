@@ -256,6 +256,10 @@ private fun ColumnScope.WebGpuViewerSettings(screenModel: ReaderSettingsScreenMo
                 pref = screenModel.preferences.bubbleDock(),
             )
             CheckboxItem(
+                label = stringResource(KMR.strings.pref_bubble_context),
+                pref = screenModel.preferences.bubbleContext(),
+            )
+            CheckboxItem(
                 label = stringResource(KMR.strings.pref_bubble_debug),
                 pref = screenModel.preferences.bubbleDebug(),
             )

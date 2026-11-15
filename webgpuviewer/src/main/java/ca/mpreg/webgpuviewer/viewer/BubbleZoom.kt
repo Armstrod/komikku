@@ -79,6 +79,13 @@ internal class BubbleOverlay(
     val screenPerImagePixel: Float,
     /** How far the page behind darkens once it is open - none when docked below the page. */
     val dim: Float = 0.45f,
+    /**
+     * The bubble's own bounds on screen - [rect] less the artwork shown round it, where
+     * [rect] was widened to fill the room below the page.
+     */
+    val bounds: FloatArray = rect,
+    /** Artwork round the bubble shows with it - lettering's clean-up is eased off for it. */
+    val context: Boolean = false,
 ) {
     val centerX: Float get() = (rect[0] + rect[2]) * 0.5f
     val centerY: Float get() = (rect[1] + rect[3]) * 0.5f
@@ -148,6 +155,8 @@ internal class BubbleOverlay(
         zoom,
         screenPerImagePixel,
         dim,
+        bounds,
+        context,
     ).also {
         it.text = text
         it.manual = manual
@@ -202,6 +211,8 @@ internal object BubbleZoom {
         tapY: Float,
         /** Where bubbles open instead of in place - see [overlay]. */
         dock: FloatArray? = null,
+        /** Docked, the artwork round it shows too - see [place]. */
+        context: Boolean = false,
     ): BubbleOverlay? {
         val hit = imageAt(page, screenWidth, screenHeight, tapX, tapY) ?: return null
         val image = hit.image
@@ -224,9 +235,9 @@ internal object BubbleZoom {
             openEdge,
             letters = BubbleDetect.TAP_LETTERS,
         ) ?: return null
-        if (!TextCheck.hasText(map, found)) return null
+        if (!accepted(TextCheck.read(map, found), found)) return null
 
-        return overlay(page, screenWidth, screenHeight, image, map, imageRect, found, dock)
+        return overlay(page, screenWidth, screenHeight, image, map, imageRect, found, dock, context)
     }
 
     /**
@@ -243,6 +254,8 @@ internal object BubbleZoom {
         include: BubbleOverlay? = null,
         /** Where bubbles open instead of in place - see [overlay]. */
         dock: FloatArray? = null,
+        /** Docked, the artwork round each shows too - see [place]. */
+        context: Boolean = false,
     ): List<BubbleOverlay> {
         val pages = ArrayList<List<BubbleOverlay>>()
         page.forEachImage { image, offsetX, imageScale ->
@@ -265,30 +278,31 @@ internal object BubbleZoom {
             val placed = ArrayList<BubbleOverlay>()
             val boxes = ArrayList<IntArray>()
             for (found in BubbleDetect.findAll(map, openEdge)) {
-                val overlay = overlay(page, screenWidth, screenHeight, image, map, imageRect, found, dock) ?: continue
+                val overlay = overlay(page, screenWidth, screenHeight, image, map, imageRect, found, dock, context)
+                    ?: continue
                 // Off screen - the far half of a wide page zoomed to half its width - it can't
                 // be read where it sits.
                 if (overlay.centerX !in 0f..1f || overlay.centerY !in 0f..1f) continue
                 // Read last, being the slowest: hatching or screentone can pass the shape tests.
                 val text = TextCheck.read(map, found)
-                if (text != null && !TextCheck.isLettering(text)) continue
+                if (!accepted(text, found)) continue
                 overlay.text = text
                 placed += overlay
                 boxes += intArrayOf(found.x0, found.y0, found.x0 + found.width, found.y0 + found.height)
             }
             if (include != null && include.centerX >= imageRect[0] && include.centerX < imageRect[2] &&
                 include.centerY >= imageRect[1] && include.centerY < imageRect[3] &&
-                placed.none { it.rect.contentEquals(include.rect) }
+                placed.none { it.bounds.contentEquals(include.bounds) }
             ) {
                 // Back from screen to map pixels, as the others were placed.
                 val sx = map.width / (imageRect[2] - imageRect[0])
                 val sy = map.height / (imageRect[3] - imageRect[1])
                 placed += include
                 boxes += intArrayOf(
-                    ((include.rect[0] - imageRect[0]) * sx).toInt(),
-                    ((include.rect[1] - imageRect[1]) * sy).toInt(),
-                    ((include.rect[2] - imageRect[0]) * sx).toInt(),
-                    ((include.rect[3] - imageRect[1]) * sy).toInt(),
+                    ((include.bounds[0] - imageRect[0]) * sx).toInt(),
+                    ((include.bounds[1] - imageRect[1]) * sy).toInt(),
+                    ((include.bounds[2] - imageRect[0]) * sx).toInt(),
+                    ((include.bounds[3] - imageRect[1]) * sy).toInt(),
                 )
             }
             pages += BubbleDetect.readingOrder(map, boxes, rightToLeft).map { placed[it] }
@@ -313,6 +327,7 @@ internal object BubbleZoom {
          * bubble that wouldn't grow there, opens in place as before.
          */
         dock: FloatArray? = null,
+        context: Boolean = false,
     ): BubbleOverlay? {
         val sx = (imageRect[2] - imageRect[0]) / map.width
         val sy = (imageRect[3] - imageRect[1]) / map.height
@@ -333,8 +348,17 @@ internal object BubbleZoom {
             maskWidth = found.width,
             maskHeight = found.height,
             dock = dock,
+            context = context,
         )
     }
+
+    /**
+     * Whether a bubble [found] with [text] read in it is kept: one that passed the full
+     * lettering test needs the recogniser not to find nothing, where it ran; one that passed
+     * only the loose test needs it to have run and read a few letters.
+     */
+    private fun accepted(text: String?, found: BubbleDetect.Found): Boolean =
+        if (found.lettered) text == null || TextCheck.isLettering(text) else text != null && TextCheck.isWords(text)
 
     /**
      * A bubble at [rect] on screen, drawn by hand in debug mode - for one the finder missed, or
@@ -346,6 +370,7 @@ internal object BubbleZoom {
         screenHeight: Int,
         rect: FloatArray,
         dock: FloatArray? = null,
+        context: Boolean = false,
     ): BubbleOverlay? {
         val hit = imageAt(page, screenWidth, screenHeight, (rect[0] + rect[2]) * 0.5f, (rect[1] + rect[3]) * 0.5f)
             ?: return null
@@ -361,6 +386,7 @@ internal object BubbleZoom {
             maskWidth = side,
             maskHeight = side,
             dock = dock,
+            context = context,
             minZoom = 1f,
         )?.also { it.manual = true }
     }
@@ -381,6 +407,7 @@ internal object BubbleZoom {
         maskWidth: Int,
         maskHeight: Int,
         dock: FloatArray?,
+        context: Boolean = false,
         minZoom: Float = MIN_ZOOM,
     ): BubbleOverlay? {
         val bubbleWidth = (rect[2] - rect[0]) * screenWidth
@@ -401,6 +428,41 @@ internal object BubbleZoom {
                 DOCK_MAX_ZOOM,
                 min(DOCK_FIT_WIDTH * screenWidth / bubbleWidth, DOCK_FIT_HEIGHT * dockHeight / bubbleHeight),
             )
+            if (docked >= DOCK_MIN_ZOOM && context) {
+                // The bubble at that zoom, with as much of the artwork round it as fills the
+                // band - the window kept on the page, so it shows page rather than margin.
+                val halfW = DOCK_FIT_WIDTH * 0.5f / docked
+                val halfH = DOCK_FIT_HEIGHT * 0.5f * (dock[1] - dock[0]) / docked
+                fun window(center: Float, half: Float, from: Float, to: Float): Pair<Float, Float> {
+                    if (2 * half >= to - from) return from to to
+                    val c = center.coerceIn(from + half, to - half)
+                    return (c - half) to (c + half)
+                }
+                val (x0, x1) = window((rect[0] + rect[2]) * 0.5f, halfW, imageRect[0], imageRect[2])
+                val (y0, y1) = window((rect[1] + rect[3]) * 0.5f, halfH, imageRect[1], imageRect[3])
+                val wide = floatArrayOf(min(x0, rect[0]), min(y0, rect[1]), max(x1, rect[2]), max(y1, rect[3]))
+                val side = 16
+                return BubbleOverlay(
+                    screenPerImagePixel = screenPerImagePixel,
+                    page = page,
+                    mask = ByteArray(side * side) { 0xFF.toByte() },
+                    maskWidth = side,
+                    maskHeight = side,
+                    rect = wide,
+                    targetX = settle((wide[0] + wide[2]) * 0.5f, docked * (wide[2] - wide[0]) * 0.5f, DOCK_MARGIN),
+                    targetY = settle(
+                        (dock[0] + dock[1]) * 0.5f,
+                        docked * (wide[3] - wide[1]) * 0.5f,
+                        DOCK_MARGIN,
+                        dock[0],
+                        dock[1],
+                    ),
+                    zoom = docked,
+                    dim = 0f,
+                    bounds = rect,
+                    context = true,
+                )
+            }
             if (docked >= DOCK_MIN_ZOOM) {
                 // Down the band as far down the page as it sat.
                 val pageTop = imageRect[1].coerceAtLeast(0f)
@@ -756,7 +818,9 @@ internal object BubbleZoom {
         if (bubbleSide < 1f) return null
 
         val art = artCnn
-        if (art.supported) {
+        // A wide window of artwork is too big for ArtCNN's input at a useful scale: drawn
+        // directly at the full zoom instead, as the page itself is.
+        if (art.supported && bubbleSide * bubble.zoom / art.factor <= MAX_INPUT) {
             val halo = art.halo
             // Native resolution where the zoom reaches past it, and never less than half the zoom
             // - ArtCNN doubles - but small enough to keep its working textures modest.
@@ -836,7 +900,8 @@ internal object BubbleZoom {
         byteBuffer.putFloat(dst.width.toFloat())
         byteBuffer.putFloat(dst.height.toFloat())
         byteBuffer.putFloat(sourceSide.toFloat())
-        byteBuffer.putFloat(0f)
+        // How hard lettering is cleaned up: eased off where artwork shows round it.
+        byteBuffer.putFloat(if (bubble.context) 0.15f else 0.6f)
         byteBuffer.flip()
         val device = WebGpuRenderer.device
         val uniforms = device.createBuffer(
@@ -892,7 +957,7 @@ struct Uniforms {
     center: vec4<f32>,
     // Zoom now, how open (0-1), surface width over height, source pixels per screen pixel.
     params: vec4<f32>,
-    // Surface width and height in pixels, the source's side, unused.
+    // Surface width and height in pixels, the source's side, how hard to clean it up.
     size: vec4<f32>,
 }
 
@@ -957,7 +1022,7 @@ fn page_at(uv: vec2<f32>) -> vec4<f32> {
     let chroma = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);
     let grey = 1.0 - smoothstep(0.06, 0.18, chroma);
     let graded = vec3<f32>(smoothstep(0.06, 0.94, y));
-    rgb = mix(rgb, graded, 0.6 * grey);
+    rgb = mix(rgb, graded, u.size.w * grey);
     return vec4<f32>(rgb * c.a, c.a);
 }
 

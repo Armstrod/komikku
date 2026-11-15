@@ -245,6 +245,9 @@ class ReaderPreferences(
     /** The page rests at the top of the screen and bubbles open enlarged in the room below. */
     fun bubbleDock() = preferenceStore.getBoolean("webgpu_bubble_dock", false)
 
+    /** Docked bubbles show with the artwork round them, filling the room below the page. */
+    fun bubbleContext() = preferenceStore.getBoolean("webgpu_bubble_context", true)
+
     /** Every bubble found outlined and numbered, with tools to correct them and a log to export. */
     fun bubbleDebug() = preferenceStore.getBoolean("webgpu_bubble_debug", false)
 

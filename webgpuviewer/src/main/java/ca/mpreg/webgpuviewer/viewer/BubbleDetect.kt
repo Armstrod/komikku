@@ -90,7 +90,18 @@ internal object BubbleDetect {
     private const val PAD = 4
 
     /** A bubble found on an [InkMap]: its bounds there, and its shape within them. */
-    class Found(val x0: Int, val y0: Int, val width: Int, val height: Int, val mask: ByteArray)
+    class Found(
+        val x0: Int,
+        val y0: Int,
+        val width: Int,
+        val height: Int,
+        val mask: ByteArray,
+        /**
+         * Its marks passed the full lettering test - lines of letters on a baseline. Else only
+         * the loose one, small marks of about letter size, and text recognition has to agree.
+         */
+        val lettered: Boolean = true,
+    )
 
     /**
      * Every bubble on [map]: each patch of paper that doesn't reach the page's edge is tried as
@@ -268,7 +279,8 @@ internal object BubbleDetect {
         // What is written in it has to look like lettering, not a face, a glove or the rivets on
         // an outlined piece of armour - for the sequence, which tries every patch of paper, and
         // for a tap as well.
-        if (letters > 0 && !lettered(shape, outside, outW, outH, letters, minLetterSize(map))) return null
+        val lettering = if (letters > 0) lettered(shape, outside, outW, outH, letters, minLetterSize(map)) else STRICT
+        if (lettering == NONE) return null
 
         // Closed over the notches lettering bites out of it, then filled again.
         val solid = BooleanArray(outW * outH) { !outside[it] }
@@ -294,7 +306,7 @@ internal object BubbleDetect {
         // Grown by the outline.
         val grown = grow(BooleanArray(outW * outH) { !closedOutside[it] }, outW, outH, OUTLINE, dilate = true)
         val mask = ByteArray(outW * outH) { if (grown[it]) 0xFF.toByte() else 0 }
-        return Found(ox, oy, outW, outH, soften(mask, outW, outH))
+        return Found(ox, oy, outW, outH, soften(mask, outW, outH), lettered = lettering == STRICT)
     }
 
     /** What of a [w] x [h] frame can be reached from its border without crossing [shape]. */
@@ -396,6 +408,16 @@ internal object BubbleDetect {
      */
     private fun minLetterSize(map: InkMap): Float = max(MIN_LETTER_PX, MIN_LETTER_SHARE * max(map.width, map.height))
 
+    /** How well a bubble's marks read as lettering - see [lettered]. */
+    private const val NONE = 0
+    private const val LOOSE = 1
+    private const val STRICT = 2
+
+    /**
+     * How well the marks inside a bubble read as lettering: [STRICT] for lines of it, as below;
+     * [LOOSE] for at least two marks of about a letter's size - bold or joined lettering, short
+     * exclamations - which text recognition then has to confirm; else [NONE].
+     */
     private fun lettered(
         paper: BooleanArray,
         outside: BooleanArray,
@@ -403,7 +425,7 @@ internal object BubbleDetect {
         h: Int,
         minLetters: Int,
         minSize: Float,
-    ): Boolean {
+    ): Int {
         val seen = BooleanArray(w * h)
         val queue = IntArray(w * h)
         val marks = ArrayList<IntArray>()
@@ -421,7 +443,7 @@ internal object BubbleDetect {
             if (y < by0) by0 = y
             if (y > by1) by1 = y
         }
-        if (bx1 < bx0 || by1 < by0) return false
+        if (bx1 < bx0 || by1 < by0) return NONE
         val bubbleW = bx1 - bx0 + 1
         val bubbleH = by1 - by0 + 1
         for (start in paper.indices) {
@@ -457,10 +479,15 @@ internal object BubbleDetect {
             if (tail < 3) continue
             marks += intArrayOf(x0, y0, x1, y1)
         }
-        if (marks.size < minLetters) return false
+        if (marks.size < 2) return NONE
+        val heights = marks.map { it[3] - it[1] + 1 }.sorted()
+        val median = heights[heights.size / 2].toFloat()
+        if (median < minSize || median > MAX_LETTER_SIZE * bubbleH) return NONE
         // Lines across only: down the bubble, hatching's strokes stack into columns as neatly
         // as vertical lettering does, and lettered pages read across.
-        return lines(marks, across = true, bubbleW, bubbleH, (bx0 + bx1) * 0.5f, minLetters, minSize)
+        val inLines = marks.size >= minLetters &&
+            lines(marks, across = true, bubbleW, bubbleH, (bx0 + bx1) * 0.5f, minLetters, minSize)
+        return if (inLines) STRICT else LOOSE
     }
 
     /**
@@ -573,7 +600,7 @@ internal object BubbleDetect {
     private const val MIN_GAP = 0.004f
 
     /** How far a gutter may slant: its rise across the piece, as a share of the piece's width. */
-    private const val MAX_SLANT = 0.08f
+    private const val MAX_SLANT = 0.3f
 
     /** How deep the cuts go - enough for any real layout. */
     private const val MAX_CUT_DEPTH = 6
@@ -592,7 +619,7 @@ internal object BubbleDetect {
      */
     fun readingOrder(map: InkMap, boxes: List<IntArray>, rightToLeft: Boolean): List<Int> {
         if (boxes.isEmpty()) return emptyList()
-        val panels = panels(map, rightToLeft)
+        val panels = panels(map, rightToLeft, boxes)
         val byPanel = boxes.indices.groupBy { i ->
             val b = boxes[i]
             val cx = (b[0] + b[2]) / 2
@@ -659,8 +686,15 @@ internal object BubbleDetect {
      * no straight line runs clear across it. Bands read top to bottom, panels across a band
      * right to left where [rightToLeft]. A page with no gutter across it is one piece.
      */
-    fun panels(map: InkMap, rightToLeft: Boolean): List<Piece> {
+    fun panels(map: InkMap, rightToLeft: Boolean, bubbles: List<IntArray> = emptyList()): List<Piece> {
         val gutter = gutters(map)
+        // Bubbles often straddle the border between two panels: across them is gutter too.
+        val w = map.width
+        for (b in bubbles) {
+            for (y in max(0, b[1]) until min(map.height, b[3])) {
+                for (x in max(0, b[0]) until min(w, b[2])) gutter[y * w + x] = true
+            }
+        }
         val out = ArrayList<Piece>()
         cut(map, gutter, Piece(0, 0, map.width, map.height, emptyList()), horizontal = true, 0, rightToLeft, out)
         return out

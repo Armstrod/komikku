@@ -30,6 +30,9 @@ internal object TextCheck {
     /** Letters or digits recognised, at least, for it to count as lettering. */
     private const val MIN_CHARS = 2
 
+    /** Letters or digits a loosely found bubble needs read in it. */
+    private const val MIN_WORD_CHARS = 3
+
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
 
     /** Whether ML Kit could be used at all - once it fails, every bubble passes. */
@@ -41,6 +44,13 @@ internal object TextCheck {
      * doesn't answer in time: it confirms what the shape tests found, never decides alone.
      */
     fun hasText(map: InkMap, found: BubbleDetect.Found): Boolean = read(map, found)?.let(::isLettering) ?: true
+
+    /**
+     * Whether recognised [text] reads as words: a few letters, two of them side by side - what
+     * a bubble that passed only the loose shape test needs, art being misread as the odd letter.
+     */
+    fun isWords(text: String): Boolean =
+        text.count { it.isLetterOrDigit() } >= MIN_WORD_CHARS && Regex("\\p{L}{2,}").containsMatchIn(text)
 
     /** Whether recognised [text] holds enough letters or digits to be lettering. */
     fun isLettering(text: String): Boolean = text.count { it.isLetterOrDigit() } >= MIN_CHARS
