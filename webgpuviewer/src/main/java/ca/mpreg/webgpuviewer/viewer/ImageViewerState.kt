@@ -278,6 +278,12 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
      */
     var bubbleGuided: Boolean = false
 
+    /**
+     * The least a letter may stand in the view below the page, in screen pixels - from a
+     * height in millimetres the reader sets. 0 leaves the zoom to the bubble's size alone.
+     */
+    var minLetterPx: Float = 0f
+
     /** Docked below the page, a bubble shows with the artwork round it rather than cut out. */
     var bubbleContext: Boolean = true
 
@@ -463,8 +469,15 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         val bh = (b.bounds[3] - b.bounds[1]) * h
         if (bw <= 0f || bh <= 0f) return null
         val dockHeight = (dock[1] - dock[0]) * h
-        val zoom = min(CAMERA_MAX_ZOOM, min(CAMERA_FIT_WIDTH * w / bw, CAMERA_FIT_HEIGHT * dockHeight / bh))
+        var zoom = min(CAMERA_MAX_ZOOM, min(CAMERA_FIT_WIDTH * w / bw, CAMERA_FIT_HEIGHT * dockHeight / bh))
             .coerceAtLeast(1f)
+        // Large enough that its letters stand at least [minLetterPx] tall - as far as the whole
+        // bubble still fits: cut off, it couldn't be read at all.
+        if (minLetterPx > 0f && b.letterHeight > 0f) {
+            val legible = minLetterPx / (b.letterHeight * h)
+            val whole = min(CAMERA_WHOLE_WIDTH * w / bw, CAMERA_WHOLE_HEIGHT * dockHeight / bh)
+            zoom = max(zoom, min(legible, whole))
+        }
         if (from != null && from[2] >= zoom * CAMERA_KEEP) {
             val v = viewOf(from)
             if (b.bounds[0] >= v[0] && b.bounds[1] >= v[1] && b.bounds[2] <= v[2] && b.bounds[3] <= v[3]) return from
@@ -860,7 +873,10 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
                 val dock = dockRegion(page) ?: return@let null
                 BubbleZoom.onImage(page, w, h, viewOf(floatArrayOf(f[0], f[1], f[2], dock[0], dock[1])))?.second
             }
-            BubbleDebugLog.Box(image, bounds, b.text, b.manual, frame)
+            // As a share of the image's height, as the bounds are.
+            val screenHeight = b.bounds[3] - b.bounds[1]
+            val letter = if (screenHeight > 0f) b.letterHeight * (bounds[3] - bounds[1]) / screenHeight else 0f
+            BubbleDebugLog.Box(image, bounds, b.text, b.manual, frame, letter)
         }
     }
 
@@ -1391,6 +1407,10 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         const val CAMERA_FIT_WIDTH = 0.8f
         const val CAMERA_FIT_HEIGHT = 0.7f
         const val CAMERA_MAX_ZOOM = 3.5f
+
+        /** The most a bubble may fill of the band, when zoomed for legible letters. */
+        const val CAMERA_WHOLE_WIDTH = 0.96f
+        const val CAMERA_WHOLE_HEIGHT = 0.92f
 
         /** A bubble already in view stays put while the view is at least this share of its zoom. */
         const val CAMERA_KEEP = 0.75f

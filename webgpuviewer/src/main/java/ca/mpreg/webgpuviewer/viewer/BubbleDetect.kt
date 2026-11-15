@@ -106,6 +106,11 @@ internal object BubbleDetect {
          * the loose one, small marks of about letter size, and text recognition has to agree.
          */
         val lettered: Boolean = true,
+        /**
+         * How tall its letters are, in map pixels - the median of its marks, so a full stop or
+         * a block of lines doesn't count. 0 where unknown.
+         */
+        val letterHeight: Float = 0f,
     )
 
     /**
@@ -274,7 +279,8 @@ internal object BubbleDetect {
         // an outlined piece of armour - for the sequence, which tries every patch of paper, and
         // for a tap as well. Clear lines of lettering earn some slack on the shape below: a
         // spiky shout, or big bold lettering filling its bubble, is still a bubble.
-        val lettering = if (letters > 0) lettered(shape, outside, outW, outH, letters, minLetterSize(map)) else STRICT
+        val reading = if (letters > 0) lettered(shape, outside, outW, outH, letters, minLetterSize(map)) else null
+        val lettering = reading?.level ?: STRICT
         if (lettering == NONE) return null
         val lined = letters > 0 && lettering == STRICT
         if (filledArea < (if (lined) MIN_FILL_LINED else MIN_FILL) * bw * bh) return null
@@ -306,7 +312,15 @@ internal object BubbleDetect {
         // Grown by the outline.
         val grown = grow(BooleanArray(outW * outH) { !closedOutside[it] }, outW, outH, OUTLINE, dilate = true)
         val mask = ByteArray(outW * outH) { if (grown[it]) 0xFF.toByte() else 0 }
-        return Found(ox, oy, outW, outH, soften(mask, outW, outH), lettered = lettering == STRICT)
+        return Found(
+            ox,
+            oy,
+            outW,
+            outH,
+            soften(mask, outW, outH),
+            lettered = lettering == STRICT,
+            letterHeight = reading?.height ?: 0f,
+        )
     }
 
     /** What of a [w] x [h] frame can be reached from its border without crossing [shape]. */
@@ -418,6 +432,9 @@ internal object BubbleDetect {
      * [LOOSE] for at least two marks of about a letter's size - bold or joined lettering, short
      * exclamations - which text recognition then has to confirm; else [NONE].
      */
+    /** How well a bubble's marks read as lettering, and how tall its letters are. */
+    private class Lettering(val level: Int, val height: Float = 0f)
+
     private fun lettered(
         paper: BooleanArray,
         outside: BooleanArray,
@@ -425,7 +442,7 @@ internal object BubbleDetect {
         h: Int,
         minLetters: Int,
         minSize: Float,
-    ): Int {
+    ): Lettering {
         val seen = BooleanArray(w * h)
         val queue = IntArray(w * h)
         val marks = ArrayList<IntArray>()
@@ -443,7 +460,7 @@ internal object BubbleDetect {
             if (y < by0) by0 = y
             if (y > by1) by1 = y
         }
-        if (bx1 < bx0 || by1 < by0) return NONE
+        if (bx1 < bx0 || by1 < by0) return Lettering(NONE)
         val bubbleW = bx1 - bx0 + 1
         val bubbleH = by1 - by0 + 1
         for (start in paper.indices) {
@@ -474,15 +491,15 @@ internal object BubbleDetect {
             if (tail < 3) continue
             marks += intArrayOf(x0, y0, x1, y1)
         }
-        if (marks.size < 2) return NONE
+        if (marks.size < 2) return Lettering(NONE)
         val heights = marks.map { it[3] - it[1] + 1 }.sorted()
         val median = heights[heights.size / 2].toFloat()
-        if (median < minSize || median > MAX_LETTER_SIZE * bubbleH) return NONE
+        if (median < minSize || median > MAX_LETTER_SIZE * bubbleH) return Lettering(NONE)
         // Lines across only: down the bubble, hatching's strokes stack into columns as neatly
         // as vertical lettering does, and lettered pages read across.
         val inLines = marks.size >= minLetters &&
             lines(marks, across = true, bubbleW, bubbleH, (bx0 + bx1) * 0.5f, minLetters, minSize)
-        return if (inLines) STRICT else LOOSE
+        return Lettering(if (inLines) STRICT else LOOSE, median)
     }
 
     /**

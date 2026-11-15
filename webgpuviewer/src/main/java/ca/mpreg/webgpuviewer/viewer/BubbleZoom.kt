@@ -138,6 +138,9 @@ internal class BubbleOverlay(
     /** The panel it is in, on screen normalised - what the view below the page aims to show. */
     var panel: FloatArray? = null
 
+    /** How tall its letters are on screen at rest, as a share of the screen's height. 0 unknown. */
+    var letterHeight: Float = 0f
+
     // Render thread only, like everything below.
     private var maskTexture: GPUTexture? = null
     private var maskView: GPUTextureView? = null
@@ -202,6 +205,7 @@ internal class BubbleOverlay(
         it.text = text
         it.manual = manual
         it.panel = panel
+        it.letterHeight = letterHeight
     }
 
     /** On the render thread. */
@@ -327,6 +331,7 @@ internal object BubbleZoom {
                 // be read where it sits.
                 if (overlay.centerX !in 0f..1f || overlay.centerY !in 0f..1f) continue
                 overlay.text = item.text
+                overlay.letterHeight = item.letterHeight * (imageRect[3] - imageRect[1]) / map.height
                 overlay.panel = item.panel?.let { p ->
                     val sx = (imageRect[2] - imageRect[0]) / map.width
                     val sy = (imageRect[3] - imageRect[1]) / map.height
@@ -370,6 +375,8 @@ internal object BubbleZoom {
         val box: IntArray,
         /** The panel round it on the map (x0, y0, x1, y1) - framed with it below the page. */
         var panel: IntArray? = null,
+        /** How tall its letters are on the map - see [BubbleDetect.Found.letterHeight]. */
+        var letterHeight: Float = found.letterHeight,
     )
 
     private class Cached(val openEdge: Int, val rightToLeft: Boolean, val items: List<Item>)
@@ -412,7 +419,12 @@ internal object BubbleZoom {
                 (blocks == null || found.lettered || text != null) && accepted(text, found)
             }
             if (!ok) continue
-            items += Item(found, text, box)
+            val readHeight = blocks?.filter { mostlyInside(it.box, box) }?.map { it.letterHeight }?.filter { it > 0f }
+            items += Item(found, text, box).also { item ->
+                // Joined or bold lettering measures poorly as marks: the page's reading of its
+                // lines, where there is one, is the better guess then.
+                if (!found.lettered || item.letterHeight <= 0f) readHeight?.maxOrNull()?.let { item.letterHeight = it }
+            }
         }
         // Lettering with no bubble round it - captions on the artwork, sound effects, spiky
         // shouts the shape tests turn away: what the page's reading holds that no bubble found
@@ -432,7 +444,7 @@ internal object BubbleZoom {
     private fun captions(map: InkMap, taken: List<IntArray>, read: List<TextCheck.Block>): List<Item> {
         val blocks = read
             .filter { TextCheck.isWords(it.text) }
-            .map { it.box.copyOf() to it.text }
+            .map { it.box.copyOf() to (it.text to it.letterHeight) }
             .toMutableList()
         // Join blocks that touch once grown by half a line - one caption the recogniser split.
         var joined = true
@@ -445,7 +457,9 @@ internal object BubbleZoom {
                     val grow = 0.5f * min(a[3] - a[1], b[3] - b[1])
                     if (a[0] - grow < b[2] && b[0] - grow < a[2] && a[1] - grow < b[3] && b[1] - grow < a[3]) {
                         val box = intArrayOf(min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
-                        blocks[i] = box to blocks[i].second + "\n" + blocks[j].second
+                        val (ta, ha) = blocks[i].second
+                        val (tb, hb) = blocks[j].second
+                        blocks[i] = box to ((ta + "\n" + tb) to max(ha, hb))
                         blocks.removeAt(j)
                         joined = true
                         break@outer
@@ -458,7 +472,8 @@ internal object BubbleZoom {
             val iy = max(0, min(t[3], box[3]) - max(t[1], box[1]))
             ix.toFloat() * iy > 0.5f * (box[2] - box[0]) * (box[3] - box[1])
         }
-        return blocks.filter { !covered(it.first) }.map { (b, text) ->
+        return blocks.filter { !covered(it.first) }.map { (b, read) ->
+            val (text, letterHeight) = read
             // Room round the lettering, as a caption box would leave.
             val padX = ((b[2] - b[0]) * 0.12f).toInt() + 2
             val padY = ((b[3] - b[1]) * 0.12f).toInt() + 2
@@ -470,7 +485,14 @@ internal object BubbleZoom {
             )
             val w = box[2] - box[0]
             val h = box[3] - box[1]
-            val found = BubbleDetect.Found(box[0], box[1], w, h, ByteArray(w * h) { 0xFF.toByte() })
+            val found = BubbleDetect.Found(
+                box[0],
+                box[1],
+                w,
+                h,
+                ByteArray(w * h) { 0xFF.toByte() },
+                letterHeight = letterHeight,
+            )
             Item(found, text, box)
         }
     }

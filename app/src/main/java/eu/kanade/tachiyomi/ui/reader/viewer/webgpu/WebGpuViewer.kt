@@ -1089,6 +1089,9 @@ open class WebGpuViewer(
             if (dockChanged && bubbleZoomApplied) config.imagePropertyChangedListener?.invoke()
             bubbleZoomApplied = true
             pager.state.bubbleContext = config.bubbleContext
+            // Tenths of a millimetre to screen pixels, by the display's own density.
+            pager.state.minLetterPx = config.bubbleMinTextHeight / 10f / MM_PER_INCH *
+                activity.resources.displayMetrics.ydpi
             val debug = config.bubbleZoom && config.bubbleDebug
             if (pager.state.bubbleDebug != debug) {
                 pager.state.bubbleDebug = debug
@@ -2267,3 +2270,5 @@ open class WebGpuViewer(
 
 /** How far in from its back edge a tap below the page steps back a bubble. */
 private const val DOCK_BACK_ZONE = 0.33f
+
+private const val MM_PER_INCH = 25.4f

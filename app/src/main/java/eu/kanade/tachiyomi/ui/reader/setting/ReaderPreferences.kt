@@ -245,6 +245,9 @@ class ReaderPreferences(
     /** The page rests at the top of the screen and bubbles open enlarged in the room below. */
     fun bubbleDock() = preferenceStore.getBoolean("webgpu_bubble_dock", false)
 
+    /** The least lettering may stand in the view below the page, in tenths of a millimetre; 0 off. */
+    fun bubbleMinTextHeight() = preferenceStore.getInt("webgpu_bubble_min_text_height", 0)
+
     /** Docked bubbles show with the artwork round them, filling the room below the page. */
     fun bubbleContext() = preferenceStore.getBoolean("webgpu_bubble_context", true)
 

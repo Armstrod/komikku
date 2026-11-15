@@ -74,7 +74,12 @@ internal object TextCheck {
     }
 
     /** Lettering the recogniser found: its bounds on the map (x0, y0, x1, y1) and what it read. */
-    class Block(val box: IntArray, val text: String)
+    class Block(
+        val box: IntArray,
+        val text: String,
+        /** How tall its letters are on the map - from its lines' height, the median. */
+        val letterHeight: Float = 0f,
+    )
 
     /**
      * The blocks of lettering the recogniser finds in [window] (x0, y0, x1, y1) of [map] - for
@@ -96,6 +101,10 @@ internal object TextCheck {
             result.textBlocks.mapNotNull { block ->
                 val r = block.boundingBox ?: return@mapNotNull null
                 if (!isLettering(block.text)) return@mapNotNull null
+                // A line's box runs from the tallest letter to the lowest; most lettering is
+                // capitals, so letters stand most of its height.
+                val lines = block.lines.mapNotNull { it.boundingBox?.height() }.sorted()
+                val lineHeight = if (lines.isEmpty()) 0f else lines[lines.size / 2] / scale
                 Block(
                     intArrayOf(
                         x0 + (r.left / scale).toInt(),
@@ -104,6 +113,7 @@ internal object TextCheck {
                         y0 + (r.bottom / scale).toInt(),
                     ),
                     block.text,
+                    LINE_TO_LETTER * lineHeight,
                 )
             }
         } catch (e: java.util.concurrent.TimeoutException) {
@@ -149,6 +159,9 @@ internal object TextCheck {
             null
         }
     }
+
+    /** How much of a recognised line's height its letters stand. */
+    private const val LINE_TO_LETTER = 0.8f
 
     /** A window searched for lettering is enlarged until at least this wide. */
     private const val BLOCK_MIN_WIDTH = 640

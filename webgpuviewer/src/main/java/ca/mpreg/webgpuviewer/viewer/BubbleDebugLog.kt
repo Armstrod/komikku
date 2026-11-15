@@ -25,6 +25,8 @@ object BubbleDebugLog {
         val manual: Boolean,
         /** How the reader framed it below the page, by hand - the view's bounds on the image. */
         val frame: FloatArray? = null,
+        /** How tall its letters were measured, as a share of the image's height. */
+        val letterHeight: Float = 0f,
     )
 
     /** Lettering text recognition found on a whole page, bubble or not: image, bounds, text. */
@@ -87,7 +89,7 @@ object BubbleDebugLog {
         val snapshot = synchronized(this) { pages.values.toList() }
         ZipOutputStream(out.outputStream().buffered()).use { zip ->
             val log = JSONObject()
-            log.put("version", 2)
+            log.put("version", 3)
             log.put("exported", System.currentTimeMillis())
             val list = JSONArray()
             snapshot.forEachIndexed { n, record ->
@@ -142,6 +144,7 @@ object BubbleDebugLog {
                     put("text", box.text ?: JSONObject.NULL)
                     put("manual", box.manual)
                     box.frame?.let { f -> put("frame", rounded(f)) }
+                    if (box.letterHeight > 0f) put("letterHeight", (box.letterHeight * 100000f).roundToInt() / 100000.0)
                 },
             )
         }

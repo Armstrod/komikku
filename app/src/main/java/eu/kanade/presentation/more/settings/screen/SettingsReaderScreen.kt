@@ -391,6 +391,17 @@ object SettingsReaderScreen : SearchableSettings {
                     subtitle = stringResource(KMR.strings.pref_bubble_context_summary),
                     enabled = bubbleZoom,
                 ).takeIf { webGpu },
+                Preference.PreferenceItem.ListPreference(
+                    preference = readerPreferences.bubbleMinTextHeight(),
+                    entries = listOf(0, 15, 20, 25, 30, 35, 40, 50)
+                        .associateWith {
+                            if (it == 0) stringResource(KMR.strings.pref_bubble_min_text_off) else "${it / 10f} mm"
+                        }
+                        .toImmutableMap(),
+                    title = stringResource(KMR.strings.pref_bubble_min_text),
+                    subtitle = stringResource(KMR.strings.pref_bubble_min_text_summary),
+                    enabled = bubbleZoom,
+                ).takeIf { webGpu },
                 Preference.PreferenceItem.SwitchPreference(
                     preference = readerPreferences.bubbleDebug(),
                     title = stringResource(KMR.strings.pref_bubble_debug),

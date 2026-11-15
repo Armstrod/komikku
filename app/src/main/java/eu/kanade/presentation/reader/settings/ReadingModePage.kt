@@ -259,6 +259,19 @@ private fun ColumnScope.WebGpuViewerSettings(screenModel: ReaderSettingsScreenMo
                 label = stringResource(KMR.strings.pref_bubble_context),
                 pref = screenModel.preferences.bubbleContext(),
             )
+            val minText by screenModel.preferences.bubbleMinTextHeight().collectAsState()
+            SettingsChipRow(KMR.strings.pref_bubble_min_text) {
+                listOf(0, 15, 20, 25, 30, 35, 40, 50).forEach {
+                    FilterChip(
+                        selected = it == minText,
+                        onClick = { screenModel.preferences.bubbleMinTextHeight().set(it) },
+                        label = {
+                            val off = stringResource(KMR.strings.pref_bubble_min_text_off)
+                            Text(if (it == 0) off else "${it / 10f} mm")
+                        },
+                    )
+                }
+            }
             CheckboxItem(
                 label = stringResource(KMR.strings.pref_bubble_debug),
                 pref = screenModel.preferences.bubbleDebug(),
