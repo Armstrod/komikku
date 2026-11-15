@@ -98,6 +98,9 @@ class WebGpuConfig(
     var bubbleMinTextHeight = 0
         private set
 
+    var bubbleShowPanel = true
+        private set
+
     /** Either bubble zoom setting changed. */
     var bubbleZoomChangedListener: (() -> Unit)? = null
 
@@ -232,6 +235,10 @@ class WebGpuConfig(
         )
         readerPreferences.bubbleDock().register(
             { bubbleDock = it },
+            { bubbleZoomChangedListener?.invoke() },
+        )
+        readerPreferences.bubbleShowPanel().register(
+            { bubbleShowPanel = it },
             { bubbleZoomChangedListener?.invoke() },
         )
         readerPreferences.bubbleMinTextHeight().register(

@@ -6,6 +6,7 @@ import com.hippo.unifile.UniFile
 import eu.kanade.domain.chapter.model.toSChapter
 import eu.kanade.domain.manga.model.getComicInfo
 import eu.kanade.domain.source.service.SourcePreferences
+import eu.kanade.tachiyomi.data.bubble.BubbleScanJob
 import eu.kanade.tachiyomi.data.cache.ChapterCache
 import eu.kanade.tachiyomi.data.download.model.Download
 import eu.kanade.tachiyomi.data.library.LibraryUpdateNotifier
@@ -459,6 +460,10 @@ class Downloader(
             DiskUtil.createNoMediaFile(tmpDir, context)
 
             download.status = Download.State.DOWNLOADED
+            // KMK -->
+            // Its speech bubbles found ahead of time, while the device has room to spare.
+            BubbleScanJob.enqueue(context, download.manga.id, listOf(download.chapter.id))
+            // KMK <--
         } catch (error: Throwable) {
             if (error is CancellationException) throw error
             // If the page list threw, it will resume here

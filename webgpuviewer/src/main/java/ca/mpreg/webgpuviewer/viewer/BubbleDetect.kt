@@ -385,7 +385,7 @@ internal object BubbleDetect {
      * midpoint is a curve rather than a staircase once the bubble is enlarged. Two box passes
      * each way, radius 2 - near enough a Gaussian.
      */
-    private fun soften(mask: ByteArray, w: Int, h: Int): ByteArray {
+    fun soften(mask: ByteArray, w: Int, h: Int): ByteArray {
         var src = FloatArray(mask.size) { (mask[it].toInt() and 0xFF) / 255f }
         val radius = 2
         repeat(2) {

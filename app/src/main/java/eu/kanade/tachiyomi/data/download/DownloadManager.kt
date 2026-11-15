@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.data.download
 
 import android.content.Context
 import com.hippo.unifile.UniFile
+import eu.kanade.tachiyomi.data.bubble.BubbleScanStore
 import eu.kanade.tachiyomi.data.download.model.Download
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.model.Page
@@ -256,6 +257,9 @@ class DownloadManager(
 
             val (mangaDir, chapterDirs) = provider.findChapterDirs(filteredChapters, manga, source)
             chapterDirs.forEach { it.delete() }
+            // KMK -->
+            BubbleScanStore.deleteChapters(manga.id, filteredChapters.map { it.id })
+            // KMK <--
             cache.removeChapters(filteredChapters, manga)
             // KMK -->
             DownloadOptimizerState.clearCache()
@@ -281,6 +285,9 @@ class DownloadManager(
                 downloader.removeFromQueue(manga)
             }
             provider.findMangaDir(/* SY --> */ manga.ogTitle /* SY <-- */, source)?.delete()
+            // KMK -->
+            BubbleScanStore.deleteManga(manga.id)
+            // KMK <--
             cache.removeManga(manga)
             // KMK -->
             DownloadOptimizerState.clearCache()

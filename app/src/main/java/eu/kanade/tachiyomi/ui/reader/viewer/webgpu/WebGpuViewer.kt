@@ -39,9 +39,12 @@ import ca.mpreg.webgpuviewer.transition.TransitionStackLeft
 import ca.mpreg.webgpuviewer.transition.TransitionStackRight
 import ca.mpreg.webgpuviewer.transition.TransitionStackUp
 import ca.mpreg.webgpuviewer.viewer.BubbleDebugLog
+import ca.mpreg.webgpuviewer.viewer.BubbleScan
 import ca.mpreg.webgpuviewer.viewer.ImagePage
 import ca.mpreg.webgpuviewer.viewer.ImageViewerContinuousState
 import com.google.android.material.color.MaterialColors
+import eu.kanade.tachiyomi.data.bubble.BubbleScanJob
+import eu.kanade.tachiyomi.data.bubble.BubbleScanStore
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
 import eu.kanade.tachiyomi.ui.reader.loader.HttpPageLoader
@@ -1089,6 +1092,7 @@ open class WebGpuViewer(
             if (dockChanged && bubbleZoomApplied) config.imagePropertyChangedListener?.invoke()
             bubbleZoomApplied = true
             pager.state.bubbleContext = config.bubbleContext
+            pager.state.showPanel = config.bubbleShowPanel
             // Tenths of a millimetre to screen pixels, by the display's own density.
             pager.state.minLetterPx = config.bubbleMinTextHeight / 10f / MM_PER_INCH *
                 activity.resources.displayMetrics.ydpi
@@ -1100,6 +1104,7 @@ open class WebGpuViewer(
         }
         pager.state.pageLabel = ::debugPageLabel
         pager.state.onDebugExport = ::exportBubbleDebug
+
         applyBubbleZoom()
         config.bubbleZoomChangedListener = ::applyBubbleZoom
 
@@ -1210,6 +1215,9 @@ open class WebGpuViewer(
     }
 
     override fun destroy() {
+        // KMK -->
+        if (BubbleScan.keyOf === scanKeyOf) BubbleScan.keyOf = null
+        // KMK <--
         // Before the interrupt: taken mid-decode, only the flag stops the worker parking.
         destroyed = true
         scope.cancel()
@@ -1931,6 +1939,19 @@ open class WebGpuViewer(
         // Empty too: lastIndex would be -1, and the requested page is read from it.
         val pages = chapters.currChapter.pages
         if (pages.isNullOrEmpty()) return
+        // KMK -->
+        // Found bubbles kept on disk by manga, chapter and page - see BubbleScanStore. Set here,
+        // not in init: [scanKeyOf] is declared below it.
+        BubbleScan.store = BubbleScanStore
+        BubbleScan.keyOf = scanKeyOf
+        // The manga's downloaded chapters scanned for bubbles while the device has room to spare.
+        activity.viewModel.manga?.id?.let { mangaId ->
+            if (scanQueuedFor != mangaId) {
+                scanQueuedFor = mangaId
+                BubbleScanJob.enqueue(activity, mangaId)
+            }
+        }
+        // KMK <--
 
         this.viewerChapters = chapters
 
@@ -2056,6 +2077,32 @@ open class WebGpuViewer(
         pager.state.transitionFromPage = fromSpread
         pager.state.animatePageTurn(if (isReversed) direction else -direction)
     }
+
+    // KMK -->
+    /** The manga whose downloaded chapters were last queued for a bubble scan. */
+    private var scanQueuedFor: Long? = null
+
+    /**
+     * An image's key in [BubbleScanStore] - its manga, chapter and page - for the reader pages
+     * held now. Off the main thread too: the page cache is read under its lock.
+     */
+    private val scanKeyOf: (Image) -> String? = { image ->
+        val mangaId = activity.viewModel.manga?.id
+        val page = synchronized(lock) {
+            pageCache.values.firstNotNullOfOrNull { viewerPage ->
+                (viewerPage as? ViewerReaderPage)
+                    ?.takeIf { (it.imagePage as? ImagePage.ImageSingle)?.image === image }
+                    ?.page
+            }
+        }
+        val chapterId = page?.let { runCatching { it.chapter.chapter.id }.getOrNull() }
+        if (mangaId == null || page == null || chapterId == null) {
+            null
+        } else {
+            BubbleScanStore.key(mangaId, chapterId, page.index)
+        }
+    }
+    // KMK <--
 
     /** The page on screen, named for the bubble debug log: book, chapter and page number. */
     private fun debugPageLabel(): String? {

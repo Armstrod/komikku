@@ -284,6 +284,12 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
      */
     var minLetterPx: Float = 0f
 
+    /**
+     * Where a bubble's letters are larger than [minLetterPx] needs, the view zooms out to show
+     * more of its panel, down to legible letters or the whole panel.
+     */
+    var showPanel: Boolean = true
+
     /** Docked below the page, a bubble shows with the artwork round it rather than cut out. */
     var bubbleContext: Boolean = true
 
@@ -477,6 +483,16 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             val legible = minLetterPx / (b.letterHeight * h)
             val whole = min(CAMERA_WHOLE_WIDTH * w / bw, CAMERA_WHOLE_HEIGHT * dockHeight / bh)
             zoom = max(zoom, min(legible, whole))
+            // Letters to spare: zoomed out to show more of its panel - as far as the letters
+            // stay legible, and no further than the whole panel.
+            val panel = b.panel
+            if (showPanel && panel != null && legible < zoom) {
+                val panelWhole = min(
+                    CAMERA_WHOLE_WIDTH / (panel[2] - panel[0]).coerceAtLeast(0.01f),
+                    CAMERA_WHOLE_HEIGHT * (dock[1] - dock[0]) / (panel[3] - panel[1]).coerceAtLeast(0.01f),
+                )
+                zoom = max(legible, panelWhole).coerceIn(CAMERA_MIN_ZOOM, zoom)
+            }
         }
         if (from != null && from[2] >= zoom * CAMERA_KEEP) {
             val v = viewOf(from)

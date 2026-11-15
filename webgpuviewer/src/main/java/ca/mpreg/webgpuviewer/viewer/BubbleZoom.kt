@@ -324,7 +324,7 @@ internal object BubbleZoom {
             val placed = ArrayList<BubbleOverlay>()
             val boxes = ArrayList<IntArray>()
             // Found, read and ordered once per image - see [found] - and only placed here.
-            for (item in found(map, openEdge, rightToLeft)) {
+            for (item in found(map, openEdge, rightToLeft, keyOf?.invoke(image))) {
                 val overlay = overlay(page, screenWidth, screenHeight, image, map, imageRect, item.found, dock, context)
                     ?: continue
                 // Off screen - the far half of a wide page zoomed to half its width - it can't
@@ -381,6 +381,14 @@ internal object BubbleZoom {
 
     private class Cached(val openEdge: Int, val rightToLeft: Boolean, val items: List<Item>)
 
+    /** Where found bubbles are kept between sessions - see [BubbleStore]. Set by the app. */
+    @Volatile
+    var store: BubbleStore? = null
+
+    /** The app's key for an image's bubbles in [store] - its book, chapter and page. */
+    @Volatile
+    var keyOf: ((Image) -> String?)? = null
+
     /** Each image's bubbles, found, read and ordered once - by its map, which goes with it. */
     private val cache = java.util.WeakHashMap<InkMap, Cached>()
 
@@ -389,9 +397,16 @@ internal object BubbleZoom {
      * that agrees - the slow part of finding them, cached for the image, so a page found
      * ahead of time (see [warm]) opens its first bubble at once.
      */
-    fun found(map: InkMap, openEdge: Int, rightToLeft: Boolean): List<Item> {
+    fun found(map: InkMap, openEdge: Int, rightToLeft: Boolean, key: String? = null): List<Item> {
         synchronized(cache) {
             cache[map]?.takeIf { it.openEdge == openEdge && it.rightToLeft == rightToLeft }?.let { return it.items }
+        }
+        // Found in an earlier session, or ahead of time as the chapter downloaded.
+        val kept = key?.let { k -> runCatching { store?.read(k) }.getOrNull() }
+            ?.let { BubbleFile.decode(it, map, rightToLeft) }
+        if (kept != null) {
+            synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, kept) }
+            return kept
         }
         // The whole page read first, on ML Kit's own thread, while the shapes are found here:
         // its blocks confirm each bubble - far quicker than reading every one apart - and what
@@ -434,6 +449,10 @@ internal object BubbleZoom {
         BubbleDetect.panelsAround(map, gutters, items.map { it.box }).forEachIndexed { i, p -> items[i].panel = p }
         val ordered = BubbleDetect.readingOrder(map, items.map { it.box }, rightToLeft, gutters).map { items[it] }
         synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, ordered) }
+        if (key != null) {
+            runCatching { store?.write(key, BubbleFile.encode(map, rightToLeft, ordered)) }
+                .onFailure { Log.w("BubbleZoom", "Couldn't keep found bubbles", it) }
+        }
         return ordered
     }
 
@@ -526,7 +545,7 @@ internal object BubbleZoom {
                 offsetX < 0f -> BubbleDetect.RIGHT_EDGE
                 else -> BubbleDetect.LEFT_EDGE
             }
-            runCatching { found(map, openEdge, rightToLeft) }
+            runCatching { found(map, openEdge, rightToLeft, keyOf?.invoke(image)) }
         }
     }
 

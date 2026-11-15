@@ -245,6 +245,9 @@ class ReaderPreferences(
     /** The page rests at the top of the screen and bubbles open enlarged in the room below. */
     fun bubbleDock() = preferenceStore.getBoolean("webgpu_bubble_dock", false)
 
+    /** Lettering larger than the least needed: the view below the page zooms out to show its panel. */
+    fun bubbleShowPanel() = preferenceStore.getBoolean("webgpu_bubble_show_panel", true)
+
     /** The least lettering may stand in the view below the page, in tenths of a millimetre; 0 off. */
     fun bubbleMinTextHeight() = preferenceStore.getInt("webgpu_bubble_min_text_height", 0)
 
