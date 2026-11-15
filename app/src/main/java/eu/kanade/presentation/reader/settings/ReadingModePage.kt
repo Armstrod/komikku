@@ -243,6 +243,18 @@ private fun ColumnScope.WebGpuViewerSettings(screenModel: ReaderSettingsScreenMo
                     )
                 }
             }
+            CheckboxItem(
+                label = stringResource(KMR.strings.pref_bubble_guided),
+                pref = screenModel.preferences.bubbleGuided(),
+            )
+            CheckboxItem(
+                label = stringResource(KMR.strings.pref_bubble_auto_open),
+                pref = screenModel.preferences.bubbleAutoOpen(),
+            )
+            CheckboxItem(
+                label = stringResource(KMR.strings.pref_bubble_dock),
+                pref = screenModel.preferences.bubbleDock(),
+            )
         }
         CheckboxItem(
             label = stringResource(KMR.strings.pref_panel_zoom),

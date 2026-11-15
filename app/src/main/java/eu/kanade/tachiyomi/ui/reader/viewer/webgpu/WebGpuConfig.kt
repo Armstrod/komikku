@@ -80,6 +80,15 @@ class WebGpuConfig(
     var panelZoom = false
         private set
 
+    var bubbleGuided = false
+        private set
+
+    var bubbleAutoOpen = true
+        private set
+
+    var bubbleDock = false
+        private set
+
     /** Either bubble zoom setting changed. */
     var bubbleZoomChangedListener: (() -> Unit)? = null
 
@@ -202,6 +211,18 @@ class WebGpuConfig(
         )
         readerPreferences.panelZoom().register(
             { panelZoom = it },
+            { bubbleZoomChangedListener?.invoke() },
+        )
+        readerPreferences.bubbleGuided().register(
+            { bubbleGuided = it },
+            { bubbleZoomChangedListener?.invoke() },
+        )
+        readerPreferences.bubbleAutoOpen().register(
+            { bubbleAutoOpen = it },
+            { bubbleZoomChangedListener?.invoke() },
+        )
+        readerPreferences.bubbleDock().register(
+            { bubbleDock = it },
             { bubbleZoomChangedListener?.invoke() },
         )
 

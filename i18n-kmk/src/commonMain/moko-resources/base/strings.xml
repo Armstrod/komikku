@@ -254,6 +254,12 @@
     <string name="pref_bubble_zoom_gesture">Bubble zoom gesture</string>
     <string name="bubble_zoom_gesture_double_tap">Double tap</string>
     <string name="bubble_zoom_gesture_long_press">Long press</string>
+    <string name="pref_bubble_guided">Step through bubbles</string>
+    <string name="pref_bubble_guided_summary">Next-page taps, swipes and volume keys open each speech bubble in turn, then turn the page</string>
+    <string name="pref_bubble_auto_open">Open first bubble on each page</string>
+    <string name="pref_bubble_auto_open_summary">A page turned to opens its first speech bubble by itself</string>
+    <string name="pref_bubble_dock">Show bubbles below the page</string>
+    <string name="pref_bubble_dock_summary">The page sits at the top of the screen and bubbles open enlarged in the space below. Tap there for the next bubble; tap the page to turn it</string>
     <string name="pref_panel_zoom">Zoom to panel</string>
     <string name="pref_panel_zoom_summary">The bubble gesture on artwork zooms to the panel under it. Where no panel is found, it zooms in as usual</string>
     <string name="pref_cover_screen_cover">Cover on the cover screen</string>

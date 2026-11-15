@@ -11,6 +11,7 @@ import android.view.View
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.spring
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastCoerceIn
@@ -1014,15 +1015,32 @@ open class WebGpuViewer(
             }
 
             onTap = { offset ->
-                when (config.navigator.getAction(PointF(offset.x, offset.y))) {
-                    NavigationRegion.MENU -> activity.toggleMenu()
-                    NavigationRegion.NEXT -> if (isReversed) moveToPrevious() else moveToNext()
-                    NavigationRegion.PREV -> if (isReversed) moveToNext() else moveToPrevious()
-                    NavigationRegion.RIGHT -> moveRight()
-                    NavigationRegion.LEFT -> moveLeft()
-                    NavigationRegion.NONE -> {}
+                val dock = if (guidedActive()) pager.state.dockRegion() else null
+                if (dock != null && offset.y >= dock[0]) {
+                    // The room below the page steps through its bubbles.
+                    guidedStep(1)
+                } else {
+                    // Docked, the page itself turns pages, past any bubbles left on it.
+                    navigateTap(offset, guided = dock == null)
                 }
             }
+
+            onGuidedTap = { offset ->
+                val dock = pager.state.dockRegion()
+                if (dock != null) {
+                    if (offset.y >= dock[0]) guidedStep(1) else navigateTap(offset, guided = false)
+                } else {
+                    // Over the page: back a bubble from the back zone, on a bubble anywhere else.
+                    when (config.navigator.getAction(PointF(offset.x, offset.y))) {
+                        NavigationRegion.PREV -> guidedStep(-1)
+                        NavigationRegion.RIGHT -> guidedStep(if (isReversed) -1 else 1)
+                        NavigationRegion.LEFT -> guidedStep(if (isReversed) 1 else -1)
+                        else -> guidedStep(1)
+                    }
+                }
+            }
+
+            onGuidedSwipe = { step -> guidedStep(step) }
 
             onLongTap = { offset ->
                 fun pageMenu() {
@@ -1042,11 +1060,21 @@ open class WebGpuViewer(
             }
         }
 
+        var bubbleZoomApplied = false
         fun applyBubbleZoom() {
             pager.state.bubbleZoomEnabled = config.bubbleZoom
             pager.state.bubbleZoomOnDoubleTap =
                 config.bubbleZoomGesture == ReaderPreferences.BubbleZoomGesture.DOUBLE_TAP
             pager.state.panelZoomEnabled = config.panelZoom
+            val guided = config.bubbleZoom && config.bubbleGuided
+            pager.state.bubbleGuided = guided
+            pager.state.bubbleAutoOpen = guided && config.bubbleAutoOpen
+            val dock = config.bubbleZoom && config.bubbleDock
+            val dockChanged = pager.state.bubbleDock != dock
+            pager.state.bubbleDock = dock
+            // Every page rests somewhere else now: rebuilt, as for any change to how they sit.
+            if (dockChanged && bubbleZoomApplied) config.imagePropertyChangedListener?.invoke()
+            bubbleZoomApplied = true
         }
         applyBubbleZoom()
         config.bubbleZoomChangedListener = ::applyBubbleZoom
@@ -2002,6 +2030,50 @@ open class WebGpuViewer(
         pager.state.animatePageTurn(if (isReversed) direction else -direction)
     }
 
+    /**
+     * Whether page-forward navigation steps through bubbles first - see
+     * [ca.mpreg.webgpuviewer.viewer.ImageViewerState.guidedNext]. Paged only; read when used, as
+     * a subclass's [isContinuous] isn't set while this class's init runs.
+     */
+    private fun guidedActive(): Boolean =
+        pager.state.bubbleGuided && !isContinuous && pager.state !is ImageViewerContinuousState
+
+    /** Cleared while a tap on the page itself navigates past the bubbles - see [navigateTap]. */
+    private var guidedNavigation = true
+
+    /** A tap's navigation, by the tap zones; [guided] false turns pages past any bubbles. */
+    private fun navigateTap(offset: Offset, guided: Boolean) {
+        guidedNavigation = guided
+        try {
+            when (config.navigator.getAction(PointF(offset.x, offset.y))) {
+                NavigationRegion.MENU -> activity.toggleMenu()
+                NavigationRegion.NEXT -> if (isReversed) moveToPrevious() else moveToNext()
+                NavigationRegion.PREV -> if (isReversed) moveToNext() else moveToPrevious()
+                NavigationRegion.RIGHT -> moveRight()
+                NavigationRegion.LEFT -> moveLeft()
+                NavigationRegion.NONE -> {}
+            }
+        } finally {
+            guidedNavigation = true
+        }
+    }
+
+    /**
+     * One guided step, [direction] 1 on through the pages or -1 back: through the open page's
+     * bubbles, and on to the next page once they are read.
+     */
+    private fun guidedStep(direction: Int) {
+        scope.launch {
+            val stepped = if (direction > 0) pager.state.guidedNext() else pager.state.guidedPrev()
+            if (!stepped) navigateSpread(direction)
+        }
+    }
+
+    /** [navigateSpread], or a [guidedStep] where bubbles come first. */
+    private fun navigateOrStep(direction: Int) {
+        if (guidedNavigation && guidedActive()) guidedStep(direction) else navigateSpread(direction)
+    }
+
     fun moveToNext() {
         moveRight()
     }
@@ -2027,7 +2099,7 @@ open class WebGpuViewer(
                 }
             }
 
-            navigateSpread(if (isReversed) -1 else 1)
+            navigateOrStep(if (isReversed) -1 else 1)
         }
     }
 
@@ -2047,7 +2119,7 @@ open class WebGpuViewer(
                 }
             }
 
-            navigateSpread(if (isReversed) 1 else -1)
+            navigateOrStep(if (isReversed) 1 else -1)
         }
     }
 

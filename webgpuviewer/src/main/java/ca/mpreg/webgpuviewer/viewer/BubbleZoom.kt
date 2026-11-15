@@ -78,6 +78,8 @@ internal class BubbleOverlay(
     val zoom: Float,
     /** Screen pixels per image pixel at rest - how much detail the scan has to give. */
     val screenPerImagePixel: Float,
+    /** How far the page behind darkens once it is open - none when docked below the page. */
+    val dim: Float = 0.45f,
 ) {
     val centerX: Float get() = (rect[0] + rect[2]) * 0.5f
     val centerY: Float get() = (rect[1] + rect[3]) * 0.5f
@@ -140,6 +142,7 @@ internal class BubbleOverlay(
         targetY,
         zoom,
         screenPerImagePixel,
+        dim,
     )
 
     /** On the render thread. */
@@ -199,7 +202,20 @@ internal object BubbleZoom {
     /** What [lettered] asks of a bubble found for the sequence: marks, how alike, and in a row. */
     private const val MIN_LETTERS = 3
     private const val LETTER_UNIFORMITY = 0.5f
-    private const val MIN_ROW = 3
+
+    /**
+     * A tapped bubble is checked the same way, a little more leniently - a finger chose it, and
+     * a short "NO!" is still worth opening - but no longer not at all: an outlined helmet or
+     * badge has no line of lettering in it.
+     */
+    private const val TAP_LETTERS = 2
+
+    /** Letters are small next to their bubble: at most this share of its height (or width). */
+    private const val MAX_LETTER_SIZE = 0.55f
+
+    /** A line of lettering runs across a fair part of its bubble, letters close together. */
+    private const val MIN_LINE_SPAN = 0.22f
+    private const val MAX_LETTER_GAP = 3f
 
     /** Room around the bubble's bounds for [CLOSE] and [OUTLINE] to grow into. */
     private const val PAD = 4
@@ -213,6 +229,15 @@ internal object BubbleZoom {
     private const val FIT_HEIGHT = 0.62f
 
     /**
+     * Docked below the page: it fills the band's width or height, grows further than in place -
+     * nothing of the page is hidden behind it - and opens there even at its own size.
+     */
+    private const val DOCK_FIT_WIDTH = 0.96f
+    private const val DOCK_FIT_HEIGHT = 0.9f
+    private const val DOCK_MAX_ZOOM = 4.5f
+    private const val DOCK_MIN_ZOOM = 1f
+
+    /**
      * The bubble under the tap at ([tapX], [tapY]) - normalised screen coordinates on a
      * [screenWidth] x [screenHeight] surface - or null where there is none to open. Off the GPU
      * thread: it reads only the images' [InkMap]s and the page's placement.
@@ -223,6 +248,8 @@ internal object BubbleZoom {
         screenHeight: Int,
         tapX: Float,
         tapY: Float,
+        /** Where bubbles open instead of in place - see [overlay]. */
+        dock: FloatArray? = null,
     ): BubbleOverlay? {
         val hit = imageAt(page, screenWidth, screenHeight, tapX, tapY) ?: return null
         val image = hit.image
@@ -243,9 +270,10 @@ internal object BubbleZoom {
             (u * map.width).toInt().coerceIn(0, map.width - 1),
             (v * map.height).toInt().coerceIn(0, map.height - 1),
             openEdge,
+            letters = TAP_LETTERS,
         ) ?: return null
 
-        return overlay(page, screenWidth, screenHeight, image, map, imageRect, found)
+        return overlay(page, screenWidth, screenHeight, image, map, imageRect, found, dock)
     }
 
     /**
@@ -260,6 +288,8 @@ internal object BubbleZoom {
         rightToLeft: Boolean,
         /** A bubble to place in the order as well - the open one, found by a tap. */
         include: BubbleOverlay? = null,
+        /** Where bubbles open instead of in place - see [overlay]. */
+        dock: FloatArray? = null,
     ): List<BubbleOverlay> {
         class Placed(
             val overlay: BubbleOverlay,
@@ -290,7 +320,7 @@ internal object BubbleZoom {
             val panels = PanelZoom.panelOrder(map, rightToLeft)
             val placed = ArrayList<Placed>()
             for (found in findAll(map, openEdge)) {
-                val overlay = overlay(page, screenWidth, screenHeight, image, map, imageRect, found) ?: continue
+                val overlay = overlay(page, screenWidth, screenHeight, image, map, imageRect, found, dock) ?: continue
                 val cx = found.x0 + found.width / 2
                 val cy = found.y0 + found.height / 2
                 val panel = panels.indexOfFirst { cx >= it[0] && cx < it[2] && cy >= it[1] && cy < it[3] }
@@ -343,6 +373,12 @@ internal object BubbleZoom {
         map: InkMap,
         imageRect: FloatArray,
         found: Found,
+        /**
+         * The band of screen below the page, top and bottom normalised, where a bubble opens
+         * enlarged instead of over the page - the page stays readable above it. Null, or a
+         * bubble that wouldn't grow there, opens in place as before.
+         */
+        dock: FloatArray? = null,
     ): BubbleOverlay? {
         val sx = (imageRect[2] - imageRect[0]) / map.width
         val sy = (imageRect[3] - imageRect[1]) / map.height
@@ -354,6 +390,27 @@ internal object BubbleZoom {
         )
         val bubbleWidth = (rect[2] - rect[0]) * screenWidth
         val bubbleHeight = (rect[3] - rect[1]) * screenHeight
+        if (dock != null && bubbleWidth > 0f && bubbleHeight > 0f) {
+            val dockHeight = (dock[1] - dock[0]) * screenHeight
+            val docked = min(
+                DOCK_MAX_ZOOM,
+                min(DOCK_FIT_WIDTH * screenWidth / bubbleWidth, DOCK_FIT_HEIGHT * dockHeight / bubbleHeight),
+            )
+            if (docked >= DOCK_MIN_ZOOM) {
+                return BubbleOverlay(
+                    screenPerImagePixel = (imageRect[2] - imageRect[0]) * screenWidth / image.width,
+                    page = page,
+                    mask = found.mask,
+                    maskWidth = found.width,
+                    maskHeight = found.height,
+                    rect = rect,
+                    targetX = 0.5f,
+                    targetY = (dock[0] + dock[1]) * 0.5f,
+                    zoom = docked,
+                    dim = 0f,
+                )
+            }
+        }
         val zoom = min(
             MAX_ZOOM,
             min(FIT_WIDTH * screenWidth / bubbleWidth, FIT_HEIGHT * screenHeight / bubbleHeight),
@@ -429,7 +486,7 @@ internal object BubbleZoom {
             }
             if (edge || tail > maxArea || tail < 200) continue
             if (x1 - x0 + 1 < 0.03f * w || y1 - y0 + 1 < 0.02f * h) continue
-            val found = find(map, brightest % w, brightest / w, openEdge, strict = true) ?: continue
+            val found = find(map, brightest % w, brightest / w, openEdge, letters = MIN_LETTERS) ?: continue
             // The same bubble can surface twice where the adaptive threshold splits a patch.
             val duplicate = out.any { other ->
                 val ix = max(0, min(found.x0 + found.width, other.x0 + other.width) - max(found.x0, other.x0))
@@ -476,6 +533,22 @@ internal object BubbleZoom {
         return hit
     }
 
+    /**
+     * The lowest edge on screen of [page]'s images where they sit now, normalised - where the
+     * room below the page starts. Null before any image is placed.
+     */
+    fun pageBottom(page: ImagePage.ImageSingle, screenWidth: Int, screenHeight: Int): Float? {
+        var bottom: Float? = null
+        page.forEachImage { image, offsetX, imageScale ->
+            val placeX = (page.x + offsetX / screenWidth + WebGpuRenderer.offsetX) / imageScale -
+                WebGpuRenderer.offsetX
+            val placeY = (page.y + WebGpuRenderer.offsetY) / imageScale - WebGpuRenderer.offsetY
+            val rect = image.placement(screenWidth, screenHeight, placeX, placeY, page.scale * imageScale)
+            bottom = max(bottom ?: rect[3], rect[3])
+        }
+        return bottom
+    }
+
     /** Which side of the map, if any, a bubble may run off - the seam side of a spread's page. */
     private const val NO_EDGE = 0
     private const val LEFT_EDGE = 1
@@ -487,7 +560,7 @@ internal object BubbleZoom {
      * anything that doesn't look like a bubble - open to the page's edge, too big, too thin, or
      * with nothing written in it.
      */
-    fun find(map: InkMap, x: Int, y: Int, openEdge: Int = NO_EDGE, strict: Boolean = false): Found? {
+    fun find(map: InkMap, x: Int, y: Int, openEdge: Int = NO_EDGE, letters: Int = 0): Found? {
         val w = map.width
         val h = map.height
 
@@ -576,9 +649,10 @@ internal object BubbleZoom {
         val ink = (filledArea - paperArea).toFloat() / filledArea
         if (ink < MIN_INK || ink > MAX_INK) return null
         if (largestMark(shape, outside, outW, outH) > MAX_MARK * filledArea) return null
-        // For the sequence, which tries every patch of paper rather than what a finger chose:
-        // what is written in it has to look like lettering, not a face or a glove.
-        if (strict && !lettered(shape, outside, outW, outH)) return null
+        // What is written in it has to look like lettering, not a face, a glove or the rivets on
+        // an outlined piece of armour - for the sequence, which tries every patch of paper, and
+        // for a tap as well.
+        if (letters > 0 && !lettered(shape, outside, outW, outH, letters)) return null
 
         // Closed over the notches lettering bites out of it, then filled again.
         val solid = BooleanArray(outW * outH) { !outside[it] }
@@ -695,27 +769,49 @@ internal object BubbleZoom {
     }
 
     /**
-     * Whether the marks inside the bubble read as lettering: at least [MIN_LETTERS] of them,
-     * most about one height, and at least three side by side in a row. A face has an eye or
-     * two, a glove a few long strokes; a line of text has neither's shape.
+     * Whether the marks inside the bubble read as lettering: at least [minLetters] of them about
+     * one size, small next to the bubble, with [minLetters] or more side by side in a line that
+     * runs across a fair part of it, letters close together. Lines may run across (most
+     * lettering) or down (Japanese). A face has an eye or two, a glove a few long strokes, an
+     * outlined badge a large emblem; none of them is a line of small, evenly spaced marks.
      */
-    private fun lettered(paper: BooleanArray, outside: BooleanArray, w: Int, h: Int): Boolean {
+    private fun lettered(paper: BooleanArray, outside: BooleanArray, w: Int, h: Int, minLetters: Int): Boolean {
         val seen = BooleanArray(w * h)
         val queue = IntArray(w * h)
-        val heights = ArrayList<Int>()
-        val centers = ArrayList<Float>()
+        val marks = ArrayList<IntArray>()
+        // The bubble's own extent, to judge the marks against.
+        var bx0 = w
+        var bx1 = -1
+        var by0 = h
+        var by1 = -1
+        for (i in paper.indices) {
+            if (outside[i]) continue
+            val x = i % w
+            val y = i / w
+            if (x < bx0) bx0 = x
+            if (x > bx1) bx1 = x
+            if (y < by0) by0 = y
+            if (y > by1) by1 = y
+        }
+        if (bx1 < bx0 || by1 < by0) return false
+        val bubbleW = bx1 - bx0 + 1
+        val bubbleH = by1 - by0 + 1
         for (start in paper.indices) {
             if (paper[start] || outside[start] || seen[start]) continue
             var head = 0
             var tail = 0
             seen[start] = true
             queue[tail++] = start
+            var x0 = w
+            var x1 = -1
             var y0 = h
             var y1 = -1
             while (head < tail) {
                 val i = queue[head++]
                 val x = i % w
                 val y = i / w
+                if (x < x0) x0 = x
+                if (x > x1) x1 = x
                 if (y < y0) y0 = y
                 if (y > y1) y1 = y
                 for (n in intArrayOf(
@@ -731,30 +827,54 @@ internal object BubbleZoom {
             }
             // A speck is not a letter.
             if (tail < 3) continue
-            heights += y1 - y0 + 1
-            centers += (y0 + y1) * 0.5f
+            marks += intArrayOf(x0, y0, x1, y1)
         }
-        if (heights.size < MIN_LETTERS) return false
-        val median = heights.sorted()[heights.size / 2].toFloat()
-        val alike = heights.count { it >= 0.5f * median && it <= 1.7f * median }
-        if (alike < LETTER_UNIFORMITY * heights.size) return false
-        // Rows: marks whose centres sit within most of a letter's height of each other.
-        val order = centers.indices.sortedBy { centers[it] }
-        var longestRow = 0
-        var rowStart = 0
-        var rowSum = 0f
-        var rowCount = 0
-        for (i in order) {
-            if (rowCount > 0 && abs(centers[i] - rowSum / rowCount) > 0.6f * median) {
-                longestRow = max(longestRow, rowCount)
-                rowSum = 0f
-                rowCount = 0
+        if (marks.size < minLetters) return false
+        return lines(marks, across = true, bubbleW, bubbleH, minLetters) ||
+            lines(marks, across = false, bubbleW, bubbleH, minLetters)
+    }
+
+    /**
+     * Whether [marks] (x0, y0, x1, y1 each) hold a line of lettering running [across] the bubble -
+     * else running down it. "Size" is a mark's extent across the line, "position" along it.
+     */
+    private fun lines(marks: List<IntArray>, across: Boolean, bubbleW: Int, bubbleH: Int, minLetters: Int): Boolean {
+        fun size(m: IntArray) = if (across) m[3] - m[1] + 1 else m[2] - m[0] + 1
+        fun center(m: IntArray) = if (across) (m[1] + m[3]) * 0.5f else (m[0] + m[2]) * 0.5f
+        fun start(m: IntArray) = if (across) m[0] else m[1]
+        fun end(m: IntArray) = if (across) m[2] else m[3]
+        val bubbleCross = if (across) bubbleH else bubbleW
+        val bubbleAlong = if (across) bubbleW else bubbleH
+
+        val median = marks.map { size(it) }.sorted()[marks.size / 2].toFloat()
+        if (median < 2f || median > MAX_LETTER_SIZE * bubbleCross) return false
+        val alike = marks.filter { size(it) >= 0.5f * median && size(it) <= 1.7f * median }
+        if (alike.size < minLetters || alike.size < LETTER_UNIFORMITY * marks.size) return false
+
+        // Lines: marks whose centres sit within most of a letter's size of each other.
+        val sorted = alike.sortedBy { center(it) }
+        var line = ArrayList<IntArray>()
+        var sum = 0f
+        fun good(l: List<IntArray>): Boolean {
+            if (l.size < minLetters) return false
+            val ordered = l.sortedBy { start(it) }
+            val span = end(ordered.last()) - start(ordered.first()) + 1
+            if (span < MIN_LINE_SPAN * bubbleAlong) return false
+            // Letters sit close; a few marks scattered across a shape do not.
+            var gaps = 0f
+            for (k in 1 until ordered.size) gaps += max(0, start(ordered[k]) - end(ordered[k - 1]))
+            return gaps / (ordered.size - 1) <= MAX_LETTER_GAP * median
+        }
+        for (m in sorted) {
+            if (line.isNotEmpty() && abs(center(m) - sum / line.size) > 0.6f * median) {
+                if (good(line)) return true
+                line = ArrayList()
+                sum = 0f
             }
-            rowSum += centers[i]
-            rowCount++
+            line += m
+            sum += center(m)
         }
-        longestRow = max(longestRow, rowCount)
-        return longestRow >= MIN_ROW
+        return good(line)
     }
 
     /** Size of the largest connected mark inside the bubble: filled in, but not its paper. */
@@ -1080,7 +1200,9 @@ internal object BubbleZoom {
         val cx = bubble.centerX + (bubble.targetX - bubble.centerX) * t
         val cy = bubble.centerY + (bubble.targetY - bubble.centerY) * t
 
-        Draw.rect(encoder, dst, 0f, 0f, 1f, 1f, ((0.45f * t.coerceAtMost(1f) * 255).toInt() shl 24))
+        if (bubble.dim > 0f) {
+            Draw.rect(encoder, dst, 0f, 0f, 1f, 1f, ((bubble.dim * t.coerceAtMost(1f) * 255).toInt() shl 24))
+        }
 
         byteBuffer.clear()
         byteBuffer.putFloat(bubble.rect[0])

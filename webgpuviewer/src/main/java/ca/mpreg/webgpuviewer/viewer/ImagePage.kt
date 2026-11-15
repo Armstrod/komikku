@@ -1759,6 +1759,18 @@ open class ImagePage {
         val slack = floor > natMax
         val center = (floor + natMax) / 2f
 
+        // Bubbles docked below the page: a page shorter than the screen rests at its top - just
+        // clear of the cutout where the reader avoids it - leaving the room below for the bubble.
+        if (slack && parent.bubbleDock) {
+            val push = if (parent.avoidCutout && parent.cutoutTopPx > 0f && parent.height > 0) {
+                parent.cutoutTopPx / (scale * parent.height)
+            } else {
+                0f
+            }
+            val rest = min(natMax + push, floor)
+            return rest to rest
+        }
+
         if (!parent.avoidCutout || parent.cutoutTopPx <= 0f || parent.height <= 0) {
             return if (slack) center to center else floor to natMax
         }

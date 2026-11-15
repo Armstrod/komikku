@@ -109,12 +109,31 @@ fun ImageViewer(
                     // ImageViewerState.
                     val dx = last.x - firstDown.position.x
                     val dy = last.y - firstDown.position.y
+                    val onGuidedTap = state.onGuidedTap.takeIf { state.bubbleGuided }
+                    val onGuidedSwipe = state.onGuidedSwipe.takeIf { state.bubbleGuided }
                     if (abs(dy) > 3 * touchSlop && abs(dy) > abs(dx)) {
-                        scope.launch { state.stepBubble(if (dy > 0f) 1 else -1) }
+                        val step = if (dy > 0f) 1 else -1
+                        if (onGuidedSwipe != null) {
+                            onGuidedSwipe(step)
+                        } else {
+                            scope.launch { state.stepBubble(step) }
+                        }
+                    } else if (onGuidedSwipe != null && abs(dx) > 3 * touchSlop && abs(dx) > abs(dy)) {
+                        // Guided: a page-turn swipe steps instead - on in reading order the way
+                        // it would turn the page on.
+                        val forward = if (state.isReversed) dx > 0f else dx < 0f
+                        onGuidedSwipe(if (forward) 1 else -1)
                     } else if (abs(dx) <= touchSlop && abs(dy) <= touchSlop) {
                         val tap = Offset(firstDown.position.x / state.width, firstDown.position.y / state.height)
-                        scope.launch { state.tapOnBubble(tap) }
+                        if (onGuidedTap != null) {
+                            onGuidedTap(tap)
+                        } else {
+                            scope.launch { state.tapOnBubble(tap) }
+                        }
                     }
+                    // Guided, each tap is a step of its own - a quick second one is not swallowed
+                    // as the end of a double tap.
+                    if (onGuidedTap != null) return@awaitEachGesture
                     val again = waitForDown(doubleTapTimeout) ?: return@awaitEachGesture
                     again.consume()
                     do {

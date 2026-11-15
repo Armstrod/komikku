@@ -236,6 +236,15 @@ class ReaderPreferences(
     /** The bubble gesture on artwork zooms to the panel under it rather than in by a step. */
     fun panelZoom() = preferenceStore.getBoolean("webgpu_panel_zoom", false)
 
+    /** Page-forward taps, swipes and keys step through a page's bubbles before turning it. */
+    fun bubbleGuided() = preferenceStore.getBoolean("webgpu_bubble_guided", false)
+
+    /** With guided bubbles, each page turned to opens its first bubble by itself. */
+    fun bubbleAutoOpen() = preferenceStore.getBoolean("webgpu_bubble_auto_open", true)
+
+    /** The page rests at the top of the screen and bubbles open enlarged in the room below. */
+    fun bubbleDock() = preferenceStore.getBoolean("webgpu_bubble_dock", false)
+
     /** A soft paper flip on every page turn. */
     fun pageTurnSound() = preferenceStore.getBoolean("webgpu_page_turn_sound", false)
 

@@ -165,6 +165,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
 
             if (pageDelta != 0) {
                 dropBubble()
+                autoOpenPending = true
                 // Dragged all the way over: the turn that a release or a tap reports happened
                 // under the finger instead.
                 if (turnHeld) onPageTurn?.runCatching { invoke() }
@@ -176,6 +177,10 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             if (settling) {
                 val current = getPage(0)
                 if (current != null) Transition.rotateCacheOnPageChange(current) else Transition.invalidateCache()
+                if (autoOpenPending) {
+                    autoOpenPending = false
+                    if (bubbleAutoOpen) scheduleAutoOpen()
+                }
             }
         }
 
@@ -193,6 +198,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         // its own transitionFromPage - set just before this call - cleared by that finally.
         val id = ++turn
         dropBubble()
+        autoOpenPending = true
         turnHeld = false
         turnAuto = true
         onPageTurn?.runCatching { invoke() }
@@ -257,6 +263,55 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
      */
     var panelZoomEnabled: Boolean = false
 
+    /**
+     * Bubbles open in the room below the page rather than over it, the page resting at the top
+     * of the screen to make that room - see [dockRegion]. Where a page leaves too little room,
+     * they open over it as before.
+     */
+    var bubbleDock: Boolean = false
+
+    /**
+     * Turning the page forward steps through its bubbles first - see [guidedNext] - and an open
+     * bubble's taps and swipes go to [onGuidedTap] and [onGuidedSwipe] instead of closing it.
+     */
+    var bubbleGuided: Boolean = false
+
+    /** With [bubbleGuided], a page turned to opens its first bubble by itself. */
+    var bubbleAutoOpen: Boolean = false
+
+    /** A tap while a bubble is open, with [bubbleGuided] - normalised screen coordinates. */
+    var onGuidedTap: ((Offset) -> Unit)? = null
+
+    /** A swipe while a bubble is open, with [bubbleGuided]: 1 on in reading order, -1 back. */
+    var onGuidedSwipe: ((Int) -> Unit)? = null
+
+    /** A page turn has begun; the page it lands on may open its first bubble once at rest. */
+    private var autoOpenPending = false
+    private var autoOpenJob: Job? = null
+
+    /** The page whose bubbles have all been read - the next step forward turns it. */
+    private var guidedDonePage: ImagePage? = null
+
+    /** A guided step in flight: steps arriving meanwhile are swallowed rather than queued. */
+    private val guidedBusy = AtomicBoolean(false)
+
+    /**
+     * The band below [page], top and bottom normalised, where [bubbleDock] opens bubbles - null
+     * when docking is off or the page leaves too little room below it.
+     */
+    fun dockRegion(page: ImagePage? = getPage(0)): FloatArray? {
+        if (!bubbleDock) return null
+        val single = page as? ImagePage.ImageSingle ?: return null
+        val w = width
+        val h = height
+        if (w <= 0 || h <= 0) return null
+        val bottom = BubbleZoom.pageBottom(single, w, h) ?: return null
+        val top = bottom + DOCK_GAP
+        val end = 1f - DOCK_BOTTOM_MARGIN
+        if (end - top < DOCK_MIN_HEIGHT) return null
+        return floatArrayOf(top, end)
+    }
+
     /** The speech bubble open over the page, if any - see [BubbleZoom]. */
     @Volatile
     internal var bubble: BubbleOverlay? = null
@@ -279,12 +334,20 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         val h = height
         if (w <= 0 || h <= 0) return false
         val found = withContext(Dispatchers.Default) {
-            runCatching { BubbleZoom.detect(page, w, h, tap.x, tap.y) }
+            runCatching { BubbleZoom.detect(page, w, h, tap.x, tap.y, dockRegion(page)) }
                 .onFailure { Log.w("ImageViewerState", "Bubble detection failed", it) }
                 .getOrNull()
         } ?: return false
         // The page may have turned while it looked.
         if (getPage(0) !== page || pageOffset != 0f || bubble != null) return false
+        open(found)
+        return true
+    }
+
+    /** Opens [found], closed until now, over its page. */
+    private suspend fun open(found: BubbleOverlay) {
+        val w = width
+        val h = height
         // Shown at progress 0 - nothing drawn - while it is enlarged, then animated: enlarging
         // inside the animation would stall its first frames and make it jump.
         bubble = found
@@ -296,7 +359,107 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             Log.w("ImageViewerState", "Bubble preparation failed", it)
         }
         if (bubble === found) animateBubble(found, 1f)
-        return true
+    }
+
+    /**
+     * One step forward through the page's bubbles: the first opens, then each next in reading
+     * order. True when it stepped; false once there are none left - the open one closes - so
+     * the caller turns the page instead.
+     */
+    suspend fun guidedNext(): Boolean {
+        if (!guidedBusy.compareAndSet(false, true)) return true
+        try {
+            val current = bubble
+            if (current != null) {
+                val page = current.page
+                val all = sequenceFor(page, current)
+                if (bubble !== current) return true
+                val at = indexIn(all, current)
+                if (at + 1 in all.indices && getPage(0) === page && pageOffset == 0f) {
+                    switchBubble(current, all[at + 1].fresh())
+                    return true
+                }
+                dropBubble()
+                guidedDonePage = page
+                return false
+            }
+            if (!bubbleZoomEnabled || pageOffset != 0f) return false
+            val page = getPage(0) as? ImagePage.ImageSingle ?: return false
+            if (page === guidedDonePage || !page.atHomeScale) return false
+            awaitInk(page, INK_WAIT_STEP_MS)
+            val all = sequenceOf(page)
+            if (getPage(0) !== page || pageOffset != 0f || bubble != null) return true
+            if (all.isEmpty()) {
+                guidedDonePage = page
+                return false
+            }
+            open(all[0].fresh())
+            return true
+        } finally {
+            guidedBusy.set(false)
+        }
+    }
+
+    /**
+     * One step back: the previous bubble, or the whole page again from the first. False with
+     * no bubble open, so the caller turns back a page.
+     */
+    suspend fun guidedPrev(): Boolean {
+        if (!guidedBusy.compareAndSet(false, true)) return true
+        try {
+            val current = bubble ?: return false
+            val page = current.page
+            val all = sequenceFor(page, current)
+            if (bubble !== current) return true
+            val at = indexIn(all, current)
+            if (at - 1 in all.indices && getPage(0) === page && pageOffset == 0f) {
+                switchBubble(current, all[at - 1].fresh())
+            } else {
+                dismissBubble()
+            }
+            guidedDonePage = null
+            return true
+        } finally {
+            guidedBusy.set(false)
+        }
+    }
+
+    /** Where [current] sits in [all]: itself, the sequence's own find of it, or the nearest. */
+    private fun indexIn(all: List<BubbleOverlay>, current: BubbleOverlay): Int =
+        all.indexOfFirst { it === current || it.rect.contentEquals(current.rect) }
+            .takeIf { it >= 0 } ?: all.indices.minByOrNull {
+            abs(all[it].centerX - current.centerX) + abs(all[it].centerY - current.centerY)
+        } ?: -1
+
+    /** Whether every image of [page] has the map bubbles are found on. */
+    private fun inkReady(page: ImagePage.ImageSingle): Boolean {
+        var any = false
+        var all = true
+        page.forEachImage { image, _, _ ->
+            any = true
+            if (image.inkMap == null) all = false
+        }
+        return any && all
+    }
+
+    /** Waits up to [timeoutMs] for [page] to be decoded, placed and mapped. */
+    private suspend fun awaitInk(page: ImagePage.ImageSingle, timeoutMs: Long) {
+        var waited = 0L
+        while (waited < timeoutMs && (!inkReady(page) || page.animationJob?.isActive == true)) {
+            delay(INK_POLL_MS)
+            waited += INK_POLL_MS
+        }
+    }
+
+    /** With [bubbleAutoOpen]: once the page turned to is ready, its first bubble opens. */
+    private fun scheduleAutoOpen() {
+        autoOpenJob?.cancel()
+        autoOpenJob = scope?.launch {
+            val page = getPage(0) as? ImagePage.ImageSingle ?: return@launch
+            awaitInk(page, INK_WAIT_AUTO_MS)
+            if (getPage(0) !== page || pageOffset != 0f || bubble != null || !page.atHomeScale) return@launch
+            guidedNext()
+        }
     }
 
     /** Closes the open bubble back into the page. */
@@ -329,7 +492,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         val h = height
         val found = if (w > 0 && h > 0) {
             withContext(Dispatchers.Default) {
-                runCatching { BubbleZoom.detect(page, w, h, tap.x, tap.y) }
+                runCatching { BubbleZoom.detect(page, w, h, tap.x, tap.y, dockRegion(page)) }
                     .onFailure { Log.w("ImageViewerState", "Bubble detection failed", it) }
                     .getOrNull()
             }
@@ -356,7 +519,26 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         val h = height
         val found = if (w > 0 && h > 0) {
             withContext(Dispatchers.Default) {
-                runCatching { BubbleZoom.detectAll(page, w, h, isReversed, include = current) }
+                runCatching { BubbleZoom.detectAll(page, w, h, isReversed, include = current, dock = dockRegion(page)) }
+                    .onFailure { Log.w("ImageViewerState", "Bubble sequence failed", it) }
+                    .getOrDefault(emptyList())
+            }
+        } else {
+            emptyList()
+        }
+        sequence = found
+        sequencePage = page
+        return found
+    }
+
+    /** The page's bubbles in reading order, with none open yet - cached as [sequenceFor]'s are. */
+    private suspend fun sequenceOf(page: ImagePage.ImageSingle): List<BubbleOverlay> {
+        sequence?.takeIf { sequencePage === page }?.let { return it }
+        val w = width
+        val h = height
+        val found = if (w > 0 && h > 0) {
+            withContext(Dispatchers.Default) {
+                runCatching { BubbleZoom.detectAll(page, w, h, isReversed, dock = dockRegion(page)) }
                     .onFailure { Log.w("ImageViewerState", "Bubble sequence failed", it) }
                     .getOrDefault(emptyList())
             }
@@ -464,6 +646,8 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     private fun dropBubble() {
         sequence = null
         sequencePage = null
+        guidedDonePage = null
+        autoOpenJob?.cancel()
         val current = bubble ?: return
         bubbleJob?.cancel()
         bubble = null
@@ -665,6 +849,16 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
 
         /** How much of the screen a framed panel takes across or down. */
         const val PANEL_FRAME = 0.94f
+
+        /** The docked band: its gap below the page, room kept clear at the bottom, least height. */
+        const val DOCK_GAP = 0.01f
+        const val DOCK_BOTTOM_MARGIN = 0.035f
+        const val DOCK_MIN_HEIGHT = 0.14f
+
+        /** How long a step or an auto-open waits for the page to be ready, and how often it looks. */
+        const val INK_WAIT_STEP_MS = 1000L
+        const val INK_WAIT_AUTO_MS = 4000L
+        const val INK_POLL_MS = 100L
     }
 
     private class RenderSnapshot(
@@ -777,6 +971,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     fun cleanup() {
         animationJob?.cancel()
         bubbleJob?.cancel()
+        autoOpenJob?.cancel()
         bubble?.let { overlay ->
             bubble = null
             overlay.release()
