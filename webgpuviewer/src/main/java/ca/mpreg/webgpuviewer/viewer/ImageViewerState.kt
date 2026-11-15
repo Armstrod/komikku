@@ -366,7 +366,9 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
      * order. True when it stepped; false once there are none left - the open one closes - so
      * the caller turns the page instead.
      */
-    suspend fun guidedNext(): Boolean {
+    suspend fun guidedNext(): Boolean = withFrameClock { guidedNextLocked() }
+
+    private suspend fun guidedNextLocked(): Boolean {
         if (!guidedBusy.compareAndSet(false, true)) return true
         try {
             val current = bubble
@@ -404,7 +406,19 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
      * One step back: the previous bubble, or the whole page again from the first. False with
      * no bubble open, so the caller turns back a page.
      */
-    suspend fun guidedPrev(): Boolean {
+    suspend fun guidedPrev(): Boolean = withFrameClock { guidedPrevLocked() }
+
+    /**
+     * Runs [block] with the viewer's frame clock: the reader calls in from a scope of its own,
+     * which has none, and the bubbles' animations need one to run at all.
+     */
+    private suspend fun <T> withFrameClock(block: suspend () -> T): T {
+        if (currentCoroutineContext()[MonotonicFrameClock] != null) return block()
+        val clock = scope?.coroutineContext?.get(MonotonicFrameClock) ?: return block()
+        return withContext(clock) { block() }
+    }
+
+    private suspend fun guidedPrevLocked(): Boolean {
         if (!guidedBusy.compareAndSet(false, true)) return true
         try {
             val current = bubble ?: return false
