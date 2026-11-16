@@ -107,6 +107,9 @@ internal class BubbleOverlay(
         val w = shapeWidth
         val h = shapeHeight
         fun inside(x: Int, y: Int) = x in 0 until w && y in 0 until h && (shape[y * w + x].toInt() and 0xFF) >= 128
+        // The fill covers the lettering too: the shape is the bubble's paper, its letters holes
+        // in it - everything not reached from the edge without crossing the shape.
+        val outside = if (edge) null else outsideOf(w, h, ::inside)
         val pixels = IntArray(w * h) { i ->
             val x = i % w
             val y = i / w
@@ -115,11 +118,44 @@ internal class BubbleOverlay(
                 // than one map pixel, which can be a fraction of a screen pixel.
                 inside(x, y) && (-2..2).any { d -> !inside(x + d, y) || !inside(x, y + d) }
             } else {
-                inside(x, y)
+                !outside!![i]
             }
             if (on) -0x1 else 0
         }
         return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888).asImageBitmap()
+    }
+
+    /** Which pixels of a [w] by [h] mask lie outside the shape: reached from the border round it. */
+    private fun outsideOf(w: Int, h: Int, inside: (Int, Int) -> Boolean): BooleanArray {
+        val out = BooleanArray(w * h)
+        val queue = IntArray(w * h)
+        var tail = 0
+        fun visit(x: Int, y: Int) {
+            if (x !in 0 until w || y !in 0 until h) return
+            val i = y * w + x
+            if (out[i] || inside(x, y)) return
+            out[i] = true
+            queue[tail++] = i
+        }
+        for (x in 0 until w) {
+            visit(x, 0)
+            visit(x, h - 1)
+        }
+        for (y in 0 until h) {
+            visit(0, y)
+            visit(w - 1, y)
+        }
+        var head = 0
+        while (head < tail) {
+            val i = queue[head++]
+            val x = i % w
+            val y = i / w
+            visit(x - 1, y)
+            visit(x + 1, y)
+            visit(x, y - 1)
+            visit(x, y + 1)
+        }
+        return out
     }
 
     val centerX: Float get() = (rect[0] + rect[2]) * 0.5f
