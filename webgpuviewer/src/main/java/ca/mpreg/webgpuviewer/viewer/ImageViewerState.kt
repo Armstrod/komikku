@@ -290,8 +290,17 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
      */
     var showPanel: Boolean = true
 
-    /** In the view below the page, bubbles not read yet are hidden until stepped to. */
+    /** In the view below the page, bubbles not read yet are dimmed until stepped to. */
     var hideUpcoming: Boolean by mutableStateOf(true)
+
+    /** How far [hideUpcoming] fades bubbles still to come: 0 not at all, 1 covered. */
+    var dimUpcoming: Float by mutableStateOf(DIM_DEFAULT)
+
+    /**
+     * The view below the page keeps to the bubble's panel: whole where it fits, else moving
+     * within it only as far as each bubble needs - see [panelFrame].
+     */
+    var followPanel: Boolean = true
 
     /** Docked below the page, a bubble shows with the artwork round it rather than cut out. */
     var bubbleContext: Boolean = true
@@ -466,9 +475,11 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     /**
      * Where the view goes to show [b]: zoomed so it fills most of the band - room left round it
      * for the artwork - and kept on the page. One already in view, at near that zoom, keeps
-     * the view where it is; a framing set by hand in debug mode wins.
+     * the view where it is; a framing set by hand in debug mode wins. With [followPanel], the
+     * view keeps to the bubble's panel instead - see [panelFrame]; [fromPanel] is the panel of
+     * the bubble [from] shows.
      */
-    private fun frameFor(b: BubbleOverlay, from: FloatArray?): FloatArray? {
+    private fun frameFor(b: BubbleOverlay, from: FloatArray?, fromPanel: FloatArray? = null): FloatArray? {
         val dock = dockRegion(b.page) ?: return null
         val w = width
         val h = height
@@ -480,35 +491,40 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         val dockHeight = (dock[1] - dock[0]) * h
         var zoom = min(CAMERA_MAX_ZOOM, min(CAMERA_FIT_WIDTH * w / bw, CAMERA_FIT_HEIGHT * dockHeight / bh))
             .coerceAtLeast(1f)
+        val bubbleWhole = min(CAMERA_WHOLE_WIDTH * w / bw, CAMERA_WHOLE_HEIGHT * dockHeight / bh)
+        // The least zoom its letters stay legible at, where a least letter height is set.
+        var legible: Float? = null
         // Large enough that its letters stand at least [minLetterPx] tall - as far as the whole
         // bubble still fits: cut off, it couldn't be read at all.
         if (minLetterPx > 0f && b.letterHeight > 0f) {
-            val legible = minLetterPx / (b.letterHeight * h)
-            val whole = min(CAMERA_WHOLE_WIDTH * w / bw, CAMERA_WHOLE_HEIGHT * dockHeight / bh)
-            zoom = max(zoom, min(legible, whole))
+            val least = min(minLetterPx / (b.letterHeight * h), bubbleWhole)
+            legible = least
+            zoom = max(zoom, least)
             // Letters to spare: zoomed out to show more of its panel - as far as the letters
             // stay legible, and no further than the whole panel.
             val panel = b.panel
-            if (showPanel && panel != null && legible < zoom) {
+            if (showPanel && !followPanel && panel != null && least < zoom) {
                 val panelWhole = min(
                     CAMERA_WHOLE_WIDTH / (panel[2] - panel[0]).coerceAtLeast(0.01f),
                     CAMERA_WHOLE_HEIGHT * (dock[1] - dock[0]) / (panel[3] - panel[1]).coerceAtLeast(0.01f),
                 )
-                zoom = max(legible, panelWhole).coerceIn(CAMERA_MIN_ZOOM, zoom)
+                zoom = max(least, panelWhole).coerceIn(CAMERA_MIN_ZOOM, zoom)
             }
+        }
+        val pageRect = BubbleZoom.pageRect(b.page, w, h) ?: floatArrayOf(0f, 0f, 1f, 1f)
+        b.panel?.takeIf { followPanel }?.let { panel ->
+            // Where legible letters are known, too big a panel is shown at the least zoom that
+            // keeps them so - as much of it as can be - else at the bubble's own zoom.
+            val least = legible ?: (zoom * CAMERA_KEEP)
+            val inPanel = legible?.coerceAtLeast(CAMERA_MIN_ZOOM) ?: zoom
+            return panelFrame(b, panel, inPanel, least, bubbleWhole, from, fromPanel, dock, pageRect)
         }
         if (from != null && from[2] >= zoom * CAMERA_KEEP) {
             val v = viewOf(from)
             if (b.bounds[0] >= v[0] && b.bounds[1] >= v[1] && b.bounds[2] <= v[2] && b.bounds[3] <= v[3]) return from
         }
-        val pageRect = BubbleZoom.pageRect(b.page, w, h) ?: floatArrayOf(0f, 0f, 1f, 1f)
-        // Kept within [lo, hi] where it fits, else centred on them.
-        fun keep(center: Float, half: Float, lo: Float, hi: Float) =
-            if (hi - lo <= 2 * half) (lo + hi) * 0.5f else center.coerceIn(lo + half, hi - half)
         // Aimed at its panel's middle, as far as the bubble stays in view - as much of the
         // panel as the zoom allows, the way frames set by hand in debug mode came out.
-        fun aim(target: Float, lo: Float, hi: Float, half: Float) =
-            if (hi - lo >= 2 * half) (lo + hi) * 0.5f else target.coerceIn(hi - half, lo + half)
         val halfX = 0.5f / zoom
         val halfY = 0.5f * (dock[1] - dock[0]) / zoom
         val panel = b.panel
@@ -521,6 +537,85 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             dock[0],
             dock[1],
         )
+    }
+
+    /**
+     * The view kept to [b]'s panel - with the bubble, should it break out of the frame. Where
+     * the whole panel fits at legible letters ([least] zoom or more), the view shows it whole,
+     * and stepping from bubble to bubble within it leaves the view still. Too big, the view
+     * stays inside the panel - no gutter or margin in it while the panel is cut off - at
+     * [zoom], and moves from where it is, within the same panel, only as far as the
+     * next bubble needs to come into view: a rocking within the frame rather than a jump to
+     * centre each bubble, half into the next panel.
+     */
+    private fun panelFrame(
+        b: BubbleOverlay,
+        panel: FloatArray,
+        zoom: Float,
+        least: Float,
+        bubbleWhole: Float,
+        from: FloatArray?,
+        fromPanel: FloatArray?,
+        dock: FloatArray,
+        pageRect: FloatArray,
+    ): FloatArray {
+        val band = dock[1] - dock[0]
+        val r = floatArrayOf(
+            min(panel[0], b.bounds[0]),
+            min(panel[1], b.bounds[1]),
+            max(panel[2], b.bounds[2]),
+            max(panel[3], b.bounds[3]),
+        )
+        val whole = min(
+            CAMERA_WHOLE_WIDTH / (r[2] - r[0]).coerceAtLeast(0.01f),
+            CAMERA_WHOLE_HEIGHT * band / (r[3] - r[1]).coerceAtLeast(0.01f),
+        )
+        if (whole >= least) {
+            val z = min(whole, max(CAMERA_MAX_ZOOM, zoom))
+            val halfX = 0.5f / z
+            val halfY = 0.5f * band / z
+            return floatArrayOf(
+                keep((r[0] + r[2]) * 0.5f, halfX, pageRect[0], pageRect[2]),
+                keep((r[1] + r[3]) * 0.5f, halfY, pageRect[1], pageRect[3]),
+                z,
+                dock[0],
+                dock[1],
+            )
+        }
+        val same = from != null && fromPanel != null && fromPanel.contentEquals(panel)
+        // Within the same panel the zoom holds while it suits this bubble too: no pumping.
+        val z = if (same && from!![2] in least..bubbleWhole && from[2] >= zoom * CAMERA_KEEP) from[2] else zoom
+        val halfX = 0.5f / z
+        val halfY = 0.5f * band / z
+        var cx: Float
+        var cy: Float
+        if (same) {
+            cx = from!![0]
+            cy = from[1]
+        } else {
+            cx = aim((panel[0] + panel[2]) * 0.5f, b.bounds[0], b.bounds[2], halfX)
+            cy = aim((panel[1] + panel[3]) * 0.5f, b.bounds[1], b.bounds[3], halfY)
+        }
+        cx = reach(cx, halfX, b.bounds[0], b.bounds[2])
+        cy = reach(cy, halfY, b.bounds[1], b.bounds[3])
+        cx = keep(keep(cx, halfX, r[0], r[2]), halfX, pageRect[0], pageRect[2])
+        cy = keep(keep(cy, halfY, r[1], r[3]), halfY, pageRect[1], pageRect[3])
+        return floatArrayOf(cx, cy, z, dock[0], dock[1])
+    }
+
+    /** Kept within [lo, hi] where it fits, else centred on them. */
+    private fun keep(center: Float, half: Float, lo: Float, hi: Float) =
+        if (hi - lo <= 2 * half) (lo + hi) * 0.5f else center.coerceIn(lo + half, hi - half)
+
+    /** Aimed at [target], as far as [lo, hi] stays in view; centred on it should it not fit. */
+    private fun aim(target: Float, lo: Float, hi: Float, half: Float) =
+        if (hi - lo >= 2 * half) (lo + hi) * 0.5f else target.coerceIn(hi - half, lo + half)
+
+    /** Moved from [center] only as far as [lo, hi] needs to be in view, with a little room. */
+    private fun reach(center: Float, half: Float, lo: Float, hi: Float): Float {
+        val room = min(half * PANEL_ROOM, max(0f, half - (hi - lo) * 0.5f))
+        if (hi - lo >= 2 * (half - room)) return (lo + hi) * 0.5f
+        return center.coerceIn(hi + room - half, lo - room + half)
     }
 
     /** Moves the view to [to] - glides there from where it is, or starts there. */
@@ -1117,7 +1212,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     private suspend fun switchBubble(current: BubbleOverlay, next: BubbleOverlay) {
         if (cameraMode(next)) {
             // The view glides on to it rather than one bubble closing and the next opening.
-            val frame = frameFor(next, camera.takeIf { cameraMode(current) })
+            val frame = frameFor(next, camera.takeIf { cameraMode(current) }, current.panel)
             if (frame != null) {
                 bubbleJob?.cancel()
                 if (bubble !== current) return
@@ -1433,6 +1528,12 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
 
         /** A bubble already in view stays put while the view is at least this share of its zoom. */
         const val CAMERA_KEEP = 0.75f
+
+        /** Room kept round a bubble the view keeps to its panel, as a share of half the view. */
+        const val PANEL_ROOM = 0.08f
+
+        /** How far bubbles still to come are faded, by default. */
+        const val DIM_DEFAULT = 0.7f
 
         /** How long the view takes to glide from one bubble to the next. */
         const val CAMERA_MOVE_MS = 380

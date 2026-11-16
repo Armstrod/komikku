@@ -277,9 +277,23 @@ private fun ColumnScope.WebGpuViewerSettings(screenModel: ReaderSettingsScreenMo
                 pref = screenModel.preferences.bubbleShowPanel(),
             )
             CheckboxItem(
+                label = stringResource(KMR.strings.pref_bubble_follow_panel),
+                pref = screenModel.preferences.bubbleFollowPanel(),
+            )
+            CheckboxItem(
                 label = stringResource(KMR.strings.pref_bubble_hide_upcoming),
                 pref = screenModel.preferences.bubbleHideUpcoming(),
             )
+            val dimStrength by screenModel.preferences.bubbleDimStrength().collectAsState()
+            SettingsChipRow(KMR.strings.pref_bubble_dim_strength) {
+                listOf(30, 50, 70, 85, 100).forEach {
+                    FilterChip(
+                        selected = it == dimStrength,
+                        onClick = { screenModel.preferences.bubbleDimStrength().set(it) },
+                        label = { Text("$it%") },
+                    )
+                }
+            }
             CheckboxItem(
                 label = stringResource(KMR.strings.pref_bubble_debug),
                 pref = screenModel.preferences.bubbleDebug(),

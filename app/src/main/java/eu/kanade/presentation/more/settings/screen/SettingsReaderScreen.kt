@@ -409,9 +409,22 @@ object SettingsReaderScreen : SearchableSettings {
                     enabled = bubbleZoom,
                 ).takeIf { webGpu },
                 Preference.PreferenceItem.SwitchPreference(
+                    preference = readerPreferences.bubbleFollowPanel(),
+                    title = stringResource(KMR.strings.pref_bubble_follow_panel),
+                    subtitle = stringResource(KMR.strings.pref_bubble_follow_panel_summary),
+                    enabled = bubbleZoom,
+                ).takeIf { webGpu },
+                Preference.PreferenceItem.SwitchPreference(
                     preference = readerPreferences.bubbleHideUpcoming(),
                     title = stringResource(KMR.strings.pref_bubble_hide_upcoming),
                     subtitle = stringResource(KMR.strings.pref_bubble_hide_upcoming_summary),
+                    enabled = bubbleZoom,
+                ).takeIf { webGpu },
+                Preference.PreferenceItem.ListPreference(
+                    preference = readerPreferences.bubbleDimStrength(),
+                    entries = listOf(30, 50, 70, 85, 100).associateWith { "$it%" }.toImmutableMap(),
+                    title = stringResource(KMR.strings.pref_bubble_dim_strength),
+                    subtitle = stringResource(KMR.strings.pref_bubble_dim_strength_summary),
                     enabled = bubbleZoom,
                 ).takeIf { webGpu },
                 Preference.PreferenceItem.SwitchPreference(

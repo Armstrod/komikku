@@ -1,5 +1,6 @@
 package ca.mpreg.webgpuviewer.viewer
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -29,6 +30,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -66,6 +68,9 @@ private val Found = Color(0xFF1E88E5)
 private val Draft = Color(0xFFFFC400)
 private val Chip = Color(0xE0202020)
 
+/** How long a bubble stepped to takes to shed its veil. */
+private const val REVEAL_MS = 180
+
 /**
  * Drawn over the page: every bubble found outlined in blue round its shape and the open one in
  * red, where bubbles show below the page or in debug mode; in the view below the page, the
@@ -83,6 +88,13 @@ internal fun BubbleUi(state: ImageViewerState) {
         val camera = state.cameraView
         val debug = state.bubbleDebug
         val outline = state.outlineRect
+        val dim = state.dimUpcoming
+        // The bubble just stepped to sheds its veil rather than snapping clear.
+        val reveal = remember { Animatable(0f) }
+        LaunchedEffect(active, marks) {
+            reveal.snapTo(1f)
+            reveal.animateTo(0f, tween(REVEAL_MS))
+        }
 
         Canvas(Modifier.fillMaxSize()) {
             marks.forEachIndexed { i, b -> if (i != active) shape(b.outlineImage, b.bounds, Found) }
@@ -96,10 +108,13 @@ internal fun BubbleUi(state: ImageViewerState) {
                     style = Stroke(width = 2.dp.toPx()),
                 )
             }
-            // In the view below the page, the bubbles still to come are hidden until reached.
-            if (camera != null && active >= 0 && state.hideUpcoming) {
+            // In the view below the page, the bubbles still to come are faded with paper white
+            // until reached: there, but too faint to read ahead - not blacked out, as if censored.
+            if (camera != null && active >= 0 && state.hideUpcoming && dim > 0f) {
                 clipRect(top = camera[3] * size.height, bottom = camera[4] * size.height) {
-                    for (i in active + 1 until marks.size) {
+                    for (i in active until marks.size) {
+                        val veil = if (i == active) dim * reveal.value else dim
+                        if (veil <= 0.01f) continue
                         val b = marks[i].bounds
                         val shown = floatArrayOf(
                             0.5f + (b[0] - camera[0]) * camera[2],
@@ -107,7 +122,7 @@ internal fun BubbleUi(state: ImageViewerState) {
                             0.5f + (b[2] - camera[0]) * camera[2],
                             (camera[3] + camera[4]) * 0.5f + (b[3] - camera[1]) * camera[2],
                         )
-                        shape(marks[i].fillImage, shown, Color.Black)
+                        shape(marks[i].fillImage, shown, Color.White.copy(alpha = veil))
                     }
                 }
             }
