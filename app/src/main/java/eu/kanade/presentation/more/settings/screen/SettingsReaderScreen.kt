@@ -433,18 +433,6 @@ object SettingsReaderScreen : SearchableSettings {
                     subtitle = stringResource(KMR.strings.pref_bubble_debug_summary),
                     enabled = bubbleZoom,
                 ).takeIf { webGpu },
-                Preference.PreferenceItem.EditTextPreference(
-                    preference = readerPreferences.bubbleReportRepo(),
-                    title = stringResource(KMR.strings.pref_bubble_report_repo),
-                    subtitle = stringResource(KMR.strings.pref_bubble_report_repo_summary),
-                    enabled = bubbleZoom,
-                ).takeIf { webGpu },
-                Preference.PreferenceItem.EditTextPreference(
-                    preference = readerPreferences.bubbleReportToken(),
-                    title = stringResource(KMR.strings.pref_bubble_report_token),
-                    subtitle = stringResource(KMR.strings.pref_bubble_report_token_summary),
-                    enabled = bubbleZoom,
-                ).takeIf { webGpu },
                 Preference.PreferenceItem.SwitchPreference(
                     preference = readerPreferences.panelZoom(),
                     title = stringResource(KMR.strings.pref_panel_zoom),

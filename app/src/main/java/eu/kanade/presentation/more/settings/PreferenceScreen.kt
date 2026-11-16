@@ -57,11 +57,7 @@ fun PreferenceScreen(
                             PreferenceGroupHeader(title = preference.title)
                         }
                     }
-                    // KMK -->
-                    // Slots reused only between items of the same kind: reusing one kind's slot
-                    // for another while prefetching can crash the Compose runtime.
-                    items(preference.preferenceItems, contentType = { it::class }) { item ->
-                        // KMK <--
+                    items(preference.preferenceItems) { item ->
                         PreferenceItem(
                             item = item,
                             highlightKey = highlightKey,
@@ -75,7 +71,7 @@ fun PreferenceScreen(
                 }
 
                 // Create Preference Item
-                is Preference.PreferenceItem<*, *> -> item(contentType = preference::class) {
+                is Preference.PreferenceItem<*, *> -> item {
                     PreferenceItem(
                         item = preference,
                         highlightKey = highlightKey,
