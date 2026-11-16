@@ -374,10 +374,10 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
 
     /** Debug: the page's bubbles in order, their bounds on screen normalised; the open one's place. */
     var debugRects: List<FloatArray> by mutableStateOf(emptyList())
+        private set
 
     /** Which of [debugRects] are panel stops. */
     var debugStops: Set<Int> by mutableStateOf(emptySet())
-        private set
         private set
     var debugActive: Int by mutableStateOf(-1)
         private set
