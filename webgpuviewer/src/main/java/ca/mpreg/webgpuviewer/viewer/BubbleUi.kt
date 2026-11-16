@@ -43,6 +43,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
@@ -67,7 +68,14 @@ private val Active = Color(0xFFE53935)
 private val Found = Color(0xFF1E88E5)
 private val Draft = Color(0xFFFFC400)
 private val Chip = Color(0xE0202020)
-private val PanelFound = Color(0xFF43A047)
+private val PanelColor = Color(0xFFFF9800)
+
+private fun DrawScope.panelBox(p: FloatArray, stroke: Stroke) = drawRect(
+    color = PanelColor,
+    topLeft = Offset(p[0] * size.width, p[1] * size.height),
+    size = Size((p[2] - p[0]) * size.width, (p[3] - p[1]) * size.height),
+    style = stroke,
+)
 
 /** How long a bubble stepped to takes to shed its veil. */
 private const val REVEAL_MS = 180
@@ -100,20 +108,11 @@ internal fun BubbleUi(state: ImageViewerState) {
         Canvas(Modifier.fillMaxSize()) {
             marks.forEachIndexed { i, b -> if (i != active) shape(b.outlineImage, b.bounds, Found) }
             marks.getOrNull(active)?.let { shape(it.outlineImage, it.bounds, Active) }
-            // Reporting a panel: the panels found, each once, to draw the right one against.
-            if (state.report == BubbleProblem.PANEL) {
-                val seen = ArrayList<FloatArray>()
-                for (m in marks) {
-                    val p = m.panel ?: continue
-                    if (seen.any { it.contentEquals(p) }) continue
-                    seen += p
-                    drawRect(
-                        color = PanelFound,
-                        topLeft = Offset(p[0] * size.width, p[1] * size.height),
-                        size = Size((p[2] - p[0]) * size.width, (p[3] - p[1]) * size.height),
-                        style = Stroke(width = 2.dp.toPx()),
-                    )
-                }
+            // Debug: panels in orange - dashed as found round the bubbles, solid where drawn by hand.
+            if (debug) {
+                val dashed = PathEffect.dashPathEffect(floatArrayOf(10.dp.toPx(), 6.dp.toPx()))
+                for (p in state.debugPanels) panelBox(p, Stroke(width = 2.dp.toPx(), pathEffect = dashed))
+                for (p in state.debugHandPanels) panelBox(p, Stroke(width = 3.dp.toPx()))
             }
             // Docked but not among the marks - one opened by hand, say: its box at least.
             if (outline != null && active < 0) {

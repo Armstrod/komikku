@@ -398,6 +398,16 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     var markActive: Int by mutableStateOf(-1)
         private set
 
+    /** Debug: the panels found round the page's bubbles, and those drawn by hand - see BubbleUi. */
+    var debugPanels: List<FloatArray> by mutableStateOf(emptyList())
+        private set
+    var debugHandPanels: List<FloatArray> by mutableStateOf(emptyList())
+        private set
+
+    /** Panels drawn by hand on [handPanelsPage], on screen normalised - kept by [finishReport]. */
+    private var handPanels = ArrayList<FloatArray>()
+    private var handPanelsPage: ImagePage? = null
+
     private fun publishDebug() {
         val seq = sequence?.takeIf { sequencePage === getPage(0) }
         val open = bubble
@@ -412,10 +422,24 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         if (!bubbleDebug || seq == null) {
             if (debugRects.isNotEmpty()) debugRects = emptyList()
             debugActive = -1
+            if (debugPanels.isNotEmpty()) debugPanels = emptyList()
+            if (debugHandPanels.isNotEmpty()) debugHandPanels = emptyList()
             return
         }
         debugRects = seq.map { it.bounds }
         debugActive = active
+        // KMK -->
+        val page = getPage(0) as? ImagePage.ImageSingle
+        if (page != null && handPanelsPage !== page && width > 0 && height > 0) {
+            handPanels = ArrayList(BubbleZoom.panelsOf(page, width, height))
+            handPanelsPage = page
+        }
+        val hand = handPanels.toList()
+        debugHandPanels = hand
+        debugPanels = seq.mapNotNull { it.panel }
+            .distinctBy { it.toList() }
+            .filter { p -> hand.none { it.contentEquals(p) } }
+        // KMK <--
     }
 
     /** Finding the page's bubbles is under way - shown in the room below the page. */
@@ -496,8 +520,9 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             val h = height
             val rtl = isReversed
             val list = seq.toList()
+            val hand = handPanels.takeIf { handPanelsPage === page }.orEmpty().toList()
             scope?.launch(Dispatchers.Default) {
-                runCatching { BubbleZoom.keep(page, w, h, rtl, list) }
+                runCatching { BubbleZoom.keep(page, w, h, rtl, list, hand) }
                     .onFailure { Log.w("ImageViewerState", "Keeping corrections failed", it) }
             }
         }
@@ -508,6 +533,8 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     /** The report dropped: nothing sent, the debug tools put away. */
     fun cancelReport() {
         if (report == null) return
+        // Panels drawn and not kept are read again from what is.
+        handPanelsPage = null
         endReport()
     }
 
@@ -533,9 +560,17 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         fun inside(b: BubbleOverlay) = b.centerX in rect[0]..rect[2] && b.centerY in rect[1]..rect[3]
         sequence?.takeIf { sequencePage === page }?.forEach { if (inside(it)) it.panel = rect.copyOf() }
         bubble?.takeIf { it.page === page && inside(it) }?.panel = rect.copyOf()
-        val label = debugLabel?.takeIf { debugPage === page } ?: return
-        BubbleZoom.onImage(page, width, height, rect)?.let { (image, bounds) ->
-            BubbleDebugLog.panel(label, image, bounds)
+        if (handPanelsPage !== page) {
+            handPanels = ArrayList(BubbleZoom.panelsOf(page, width, height))
+            handPanelsPage = page
+        }
+        handPanels += rect.copyOf()
+        publishDebug()
+        val label = debugLabel?.takeIf { debugPage === page }
+        if (label != null) {
+            BubbleZoom.onImage(page, width, height, rect)?.let { (image, bounds) ->
+                BubbleDebugLog.panel(label, image, bounds)
+            }
         }
         // Framed again with the panel as now drawn.
         bubble?.takeIf { it.page === page && cameraMode(it) }?.let { b ->

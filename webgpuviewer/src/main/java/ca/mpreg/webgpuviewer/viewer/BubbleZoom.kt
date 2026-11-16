@@ -426,6 +426,8 @@ internal object BubbleZoom {
         screenHeight: Int,
         rightToLeft: Boolean,
         list: List<BubbleOverlay>,
+        /** Panels drawn by hand, on screen normalised. */
+        panels: List<FloatArray> = emptyList(),
     ) {
         page.forEachImage { image, offsetX, imageScale ->
             val map = image.inkMap ?: return@forEachImage
@@ -457,11 +459,31 @@ internal object BubbleZoom {
                         Item(found, b.text, intArrayOf(box[0], box[1], box[0] + w, box[1] + h), panel, letters)
                     }
                 }
-            synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, items) }
+            val drawn = panels
+                .filter { p -> (p[0] + p[2]) * 0.5f in r[0]..r[2] && (p[1] + p[3]) * 0.5f in r[1]..r[3] }
+                .map { toMap(it) }
+            synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, items, drawn) }
             val key = keyOf?.invoke(image) ?: return@forEachImage
-            runCatching { store?.write(key, BubbleFile.encode(map, rightToLeft, items)) }
+            runCatching { store?.write(key, BubbleFile.encode(map, rightToLeft, items, drawn)) }
                 .onFailure { Log.w("BubbleZoom", "Couldn't keep corrected bubbles", it) }
         }
+    }
+
+    /** The panels drawn by hand on [page] and kept - see [keep] - on screen normalised. */
+    fun panelsOf(page: ImagePage.ImageSingle, screenWidth: Int, screenHeight: Int): List<FloatArray> {
+        val out = ArrayList<FloatArray>()
+        page.forEachImage { image, offsetX, imageScale ->
+            val map = image.inkMap ?: return@forEachImage
+            val panels = synchronized(cache) { cache[map]?.panels }.orEmpty()
+            if (panels.isEmpty()) return@forEachImage
+            val r = imageRectOf(page, offsetX, imageScale, image, screenWidth, screenHeight)
+            val sx = (r[2] - r[0]) / map.width
+            val sy = (r[3] - r[1]) / map.height
+            for (p in panels) {
+                out += floatArrayOf(r[0] + p[0] * sx, r[1] + p[1] * sy, r[0] + p[2] * sx, r[1] + p[3] * sy)
+            }
+        }
+        return out
     }
     // KMK <--
 
@@ -476,7 +498,13 @@ internal object BubbleZoom {
         var letterHeight: Float = found.letterHeight,
     )
 
-    private class Cached(val openEdge: Int, val rightToLeft: Boolean, val items: List<Item>)
+    private class Cached(
+        val openEdge: Int,
+        val rightToLeft: Boolean,
+        val items: List<Item>,
+        /** Panels drawn by hand on the image, map pixels. */
+        val panels: List<IntArray> = emptyList(),
+    )
 
     /** How far, in map pixels, a corrected bubble's box may be from the one found to be it. */
     private const val KEEP_SLACK = 3
@@ -505,8 +533,8 @@ internal object BubbleZoom {
         val kept = key?.let { k -> runCatching { store?.read(k) }.getOrNull() }
             ?.let { BubbleFile.decode(it, map, rightToLeft) }
         if (kept != null) {
-            synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, kept) }
-            return kept
+            synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, kept.items, kept.panels) }
+            return kept.items
         }
         // The whole page read first, on ML Kit's own thread, while the shapes are found here:
         // its blocks confirm each bubble - far quicker than reading every one apart - and what

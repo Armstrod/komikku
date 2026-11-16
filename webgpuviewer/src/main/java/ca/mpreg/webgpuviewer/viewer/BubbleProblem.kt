@@ -35,7 +35,7 @@ enum class BubbleProblem(val key: String, val group: String, val label: String, 
         "panel",
         "Panels",
         "Panel wrong or missing",
-        "Draw the whole panel round its bubbles - green shows the panels found - then Done",
+        "Draw panel round the whole frame - orange shows panels: dashed found, solid drawn - then Done",
     ),
     FRAMING(
         "framing",

@@ -28,7 +28,10 @@ interface BubbleStore {
  */
 internal object BubbleFile {
     private const val MAGIC = 0x42554231 // "BUB1"
-    private const val VERSION = 1
+    private const val VERSION = 2
+
+    /** What a file holds: the bubbles, and the panels drawn by hand on the image (map pixels). */
+    class Kept(val items: List<BubbleZoom.Item>, val panels: List<IntArray>)
 
     /** The print's side: the image as this many cells across and down, each its mean luma. */
     private const val PRINT = 8
@@ -39,7 +42,12 @@ internal object BubbleFile {
     /** How far the aspect ratios may differ. */
     private const val ASPECT_TOLERANCE = 0.02f
 
-    fun encode(map: InkMap, rightToLeft: Boolean, items: List<BubbleZoom.Item>): ByteArray {
+    fun encode(
+        map: InkMap,
+        rightToLeft: Boolean,
+        items: List<BubbleZoom.Item>,
+        panels: List<IntArray> = emptyList(),
+    ): ByteArray {
         val bytes = ByteArrayOutputStream()
         DataOutputStream(GZIPOutputStream(bytes)).use { out ->
             out.writeInt(MAGIC)
@@ -87,6 +95,14 @@ internal object BubbleFile {
                 out.writeInt(runs.size)
                 for (r in runs) out.writeInt(r)
             }
+            // Version 2: panels drawn by hand.
+            out.writeInt(panels.size)
+            for (p in panels) {
+                out.writeFloat(p[0] / w)
+                out.writeFloat(p[1] / h)
+                out.writeFloat(p[2] / w)
+                out.writeFloat(p[3] / h)
+            }
         }
         return bytes.toByteArray()
     }
@@ -95,9 +111,11 @@ internal object BubbleFile {
      * The bubbles in [data], laid on [map] - null where it isn't this image, or isn't readable.
      * Re-ordered where it was found for the other reading direction.
      */
-    fun decode(data: ByteArray, map: InkMap, rightToLeft: Boolean): List<BubbleZoom.Item>? = runCatching {
+    fun decode(data: ByteArray, map: InkMap, rightToLeft: Boolean): Kept? = runCatching {
         DataInputStream(GZIPInputStream(ByteArrayInputStream(data))).use { input ->
-            if (input.readInt() != MAGIC || input.readInt() != VERSION) return null
+            if (input.readInt() != MAGIC) return null
+            val version = input.readInt()
+            if (version !in 1..VERSION) return null
             val aspect = input.readFloat()
             if (abs(aspect - map.width.toFloat() / map.height) > ASPECT_TOLERANCE * aspect) return null
             val kept = ByteArray(PRINT * PRINT)
@@ -159,11 +177,24 @@ internal object BubbleFile {
                 )
                 items += BubbleZoom.Item(found, text, intArrayOf(x0, y0, x0 + fw, y0 + fh), panel, letterHeight)
             }
-            if (keptRightToLeft == rightToLeft) {
+            val panels = if (version >= 2) {
+                List(input.readInt()) {
+                    intArrayOf(
+                        (input.readFloat() * w).roundToInt(),
+                        (input.readFloat() * h).roundToInt(),
+                        (input.readFloat() * w).roundToInt(),
+                        (input.readFloat() * h).roundToInt(),
+                    )
+                }
+            } else {
+                emptyList()
+            }
+            val ordered = if (keptRightToLeft == rightToLeft) {
                 items
             } else {
                 BubbleDetect.readingOrder(map, items.map { it.box }, rightToLeft).map { items[it] }
             }
+            Kept(ordered, panels)
         }
     }.getOrNull()
 
