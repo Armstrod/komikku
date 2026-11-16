@@ -106,7 +106,7 @@ internal fun BubbleUi(state: ImageViewerState) {
         }
 
         Canvas(Modifier.fillMaxSize()) {
-            marks.forEachIndexed { i, b -> if (i != active) shape(b.outlineImage, b.bounds, Found) }
+            marks.forEachIndexed { i, b -> if (i != active && !b.panelStop) shape(b.outlineImage, b.bounds, Found) }
             marks.getOrNull(active)?.let { shape(it.outlineImage, it.bounds, Active) }
             // Debug: panels in orange - dashed as found round the bubbles, solid where drawn by hand.
             if (debug) {
@@ -128,6 +128,8 @@ internal fun BubbleUi(state: ImageViewerState) {
             if (camera != null && active >= 0 && state.hideUpcoming && dim > 0f) {
                 clipRect(top = camera[3] * size.height, bottom = camera[4] * size.height) {
                     for (i in active until marks.size) {
+                        // A panel stop is artwork: never veiled.
+                        if (marks[i].panelStop) continue
                         val veil = if (i == active) dim * reveal.value else dim
                         if (veil <= 0.01f) continue
                         val b = marks[i].bounds
@@ -282,6 +284,15 @@ internal fun BubbleUi(state: ImageViewerState) {
             )
         }
 
+        if (state.sendPrompt > 0) {
+            SendPrompt(
+                state.sendPrompt,
+                Modifier.align(Alignment.Center),
+                onSend = { state.answerSendPrompt(true) },
+                onDrop = { state.answerSendPrompt(false) },
+            )
+        }
+
         state.missPrompt?.let {
             MissPrompt(
                 Modifier.align(Alignment.Center),
@@ -380,7 +391,7 @@ private fun PressMenu(
     ) {
         ToolChip("Find missed text here", enabled = true, onClick = onFind)
         BasicText(
-            "Report a problem",
+            "Fix a problem on this page",
             style = TextStyle(color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold),
         )
         BubbleProblem.entries.groupBy { it.group }.forEach { (group, problems) ->
@@ -388,6 +399,35 @@ private fun PressMenu(
             problems.forEach { problem -> ToolChip(problem.label, enabled = true) { onReport(problem) } }
         }
         ToolChip("Cancel", enabled = true, onClick = onCancel)
+    }
+}
+// KMK <--
+
+// KMK -->
+/** The page's bubbles have run out with fixes made on it: send them as one report, or not. */
+@Composable
+private fun SendPrompt(count: Int, modifier: Modifier, onSend: () -> Unit, onDrop: () -> Unit) {
+    Column(
+        modifier = modifier
+            .padding(24.dp)
+            .background(Chip, RoundedCornerShape(10.dp))
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        BasicText(
+            "End of the page. Send a report of the ${if (count == 1) "fix" else "$count fixes"} made on it?",
+            style = TextStyle(color = Color.White, fontSize = 15.sp),
+        )
+        Spacer(Modifier.height(4.dp))
+        BasicText(
+            "Your corrections stay either way. Tap again after to turn the page.",
+            style = TextStyle(color = Color(0xFFBDBDBD), fontSize = 12.sp),
+        )
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            ToolChip("Send report", enabled = true, onClick = onSend)
+            ToolChip("Don't send", enabled = true, onClick = onDrop)
+        }
     }
 }
 // KMK <--
@@ -435,7 +475,7 @@ private fun DebugToolbar(state: ImageViewerState, modifier: Modifier, onAction: 
                 ToolChip(if (state.drawingPanel) "Cancel panel" else "Draw panel", enabled = true) {
                     onAction(DebugAction.PANEL)
                 }
-                ToolChip("Done - send report", enabled = true) { onAction(DebugAction.DONE) }
+                ToolChip("Done", enabled = true) { onAction(DebugAction.DONE) }
                 ToolChip("Cancel", enabled = true) { onAction(DebugAction.CANCEL) }
             }
         }

@@ -172,6 +172,9 @@ internal class BubbleOverlay(
     /** Drawn by hand in debug mode, not found. */
     var manual: Boolean = false
 
+    /** A panel with no bubbles, drawn by hand: a stop that shows the whole panel, no lettering. */
+    var panelStop: Boolean = false
+
     /** The panel it is in, on screen normalised - what the view below the page aims to show. */
     var panel: FloatArray? = null
 
@@ -241,6 +244,7 @@ internal class BubbleOverlay(
     ).also {
         it.text = text
         it.manual = manual
+        it.panelStop = panelStop
         it.panel = panel
         it.letterHeight = letterHeight
     }
@@ -356,6 +360,8 @@ internal object BubbleZoom {
                 if (overlay.centerX !in 0f..1f || overlay.centerY !in 0f..1f) continue
                 overlay.text = item.text
                 overlay.letterHeight = item.letterHeight * (imageRect[3] - imageRect[1]) / map.height
+                overlay.panelStop = item.panelStop
+                overlay.manual = item.panelStop
                 overlay.panel = item.panel?.let { p ->
                     val sx = (imageRect[2] - imageRect[0]) / map.width
                     val sy = (imageRect[3] - imageRect[1]) / map.height
@@ -451,6 +457,12 @@ internal object BubbleZoom {
                     val letters = b.letterHeight / (r[3] - r[1]) * map.height
                     if (was != null && !b.manual) {
                         Item(was.found, b.text ?: was.text, was.box, panel ?: was.panel, was.letterHeight)
+                    } else if (b.panelStop) {
+                        val w = (box[2] - box[0]).coerceAtLeast(1)
+                        val h = (box[3] - box[1]).coerceAtLeast(1)
+                        val mask = ByteArray(w * h) { (-1).toByte() }
+                        val found = BubbleDetect.Found(box[0], box[1], w, h, mask, true, 0f)
+                        Item(found, null, intArrayOf(box[0], box[1], box[0] + w, box[1] + h), box, 0f, true)
                     } else {
                         val w = (box[2] - box[0]).coerceAtLeast(1)
                         val h = (box[3] - box[1]).coerceAtLeast(1)
@@ -496,6 +508,8 @@ internal object BubbleZoom {
         var panel: IntArray? = null,
         /** How tall its letters are on the map - see [BubbleDetect.Found.letterHeight]. */
         var letterHeight: Float = found.letterHeight,
+        /** A panel with no bubbles, drawn by hand, stepped to as a stop of its own. */
+        var panelStop: Boolean = false,
     )
 
     private class Cached(

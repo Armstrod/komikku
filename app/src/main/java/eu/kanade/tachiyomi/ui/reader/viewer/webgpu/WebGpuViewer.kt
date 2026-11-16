@@ -2171,11 +2171,12 @@ open class WebGpuViewer(
 
     /** The page on screen, named for the bubble debug log: book, chapter and page number. */
     // KMK -->
-    /** A problem reported on a page: written out as a one-page log and queued to upload. */
-    private fun sendBubbleReport(label: String, problem: BubbleProblem) {
+    /** The fixes made on a page: written out as a one-page log and queued to upload. */
+    private fun sendBubbleReport(label: String, problems: List<BubbleProblem>) {
         scope.launch {
             val meta = mapOf(
-                "problem" to problem.key,
+                "problem" to problems.map { it.key }.distinct().joinToString("+"),
+                "fixes" to problems.joinToString(",") { it.key },
                 "page" to label,
                 "app" to BuildConfig.VERSION_NAME,
                 "device" to "${Build.MANUFACTURER} ${Build.MODEL}",

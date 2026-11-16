@@ -470,8 +470,17 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     /** Debug: drawing the panel a bubble belongs in, rather than a missed bubble. */
     var drawingPanel: Boolean by mutableStateOf(false)
 
-    /** A report finished: the page's debug log [label] and the [problem] - the app sends it. */
-    var onReport: ((label: String, problem: BubbleProblem) -> Unit)? = null
+    /** A page's report sent: its debug log [label] and every problem fixed on it - the app sends it. */
+    var onReport: ((label: String, problems: List<BubbleProblem>) -> Unit)? = null
+
+    /** Problems fixed on [fixPage] so far, sent together as one report when the page is done. */
+    private val fixed = ArrayList<BubbleProblem>()
+    private var fixPage: ImagePage? = null
+    private var fixLabel: String? = null
+
+    /** The page's bubbles have run out with fixes made on it: how many, while asked to send them. */
+    var sendPrompt: Int by mutableStateOf(0)
+        private set
 
     /**
      * Reports [problem] on the page on screen: the debug tools come out for this page alone -
@@ -507,8 +516,9 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     }
 
     /**
-     * The report is done: its corrections are kept for the page - see [BubbleZoom.keep] - it
-     * goes to [onReport], and reading carries on as before.
+     * The fix is done: its corrections are kept for the page - see [BubbleZoom.keep] - and
+     * noted for the page's report, sent once the page is done (see [sendPrompt]); reading
+     * carries on from the page's first stop, to step through it as corrected.
      */
     fun finishReport() {
         val problem = report ?: return
@@ -526,8 +536,54 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
                     .onFailure { Log.w("ImageViewerState", "Keeping corrections failed", it) }
             }
         }
-        if (label != null) onReport?.invoke(label, problem)
+        if (page != null && label != null) {
+            if (fixPage !== page) {
+                flushFixes()
+                fixPage = page
+                fixLabel = label
+            }
+            fixed += problem
+            BubbleDebugLog.note(label, "fixed ${problem.key}")
+        }
         endReport()
+        // Through the page again from its first stop, as now corrected.
+        val first = seq?.firstOrNull()
+        if (page != null && first != null) {
+            scope?.launch {
+                withFrameClock {
+                    if (getPage(0) !== page) return@withFrameClock
+                    val current = bubble
+                    if (current != null && current.page === page) {
+                        switchBubble(current, first.fresh())
+                    } else {
+                        open(first.fresh())
+                    }
+                    guidedDonePage = null
+                }
+            }
+        }
+    }
+
+    /** Sends the page's fixes as one report - see [onReport] - if there are any. */
+    private fun flushFixes() {
+        val label = fixLabel
+        if (fixed.isNotEmpty() && label != null) onReport?.invoke(label, fixed.toList())
+        fixed.clear()
+        fixPage = null
+        fixLabel = null
+        sendPrompt = 0
+    }
+
+    /** [sendPrompt] answered: the report sent, or dropped - the fixes stay kept either way. */
+    fun answerSendPrompt(send: Boolean) {
+        if (send) {
+            flushFixes()
+        } else {
+            fixed.clear()
+            fixPage = null
+            fixLabel = null
+            sendPrompt = 0
+        }
     }
 
     /** The report dropped: nothing sent, the debug tools put away. */
@@ -557,9 +613,35 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     fun debugPanel(rect: FloatArray) {
         drawingPanel = false
         val page = getPage(0) as? ImagePage.ImageSingle ?: return
-        fun inside(b: BubbleOverlay) = b.centerX in rect[0]..rect[2] && b.centerY in rect[1]..rect[3]
-        sequence?.takeIf { sequencePage === page }?.forEach { if (inside(it)) it.panel = rect.copyOf() }
+        fun inside(b: BubbleOverlay) =
+            !b.panelStop && b.centerX in rect[0]..rect[2] && b.centerY in rect[1]..rect[3]
+        val seq = sequence?.takeIf { sequencePage === page }
+        seq?.forEach { if (inside(it)) it.panel = rect.copyOf() }
         bubble?.takeIf { it.page === page && inside(it) }?.panel = rect.copyOf()
+        // A panel with no bubbles in it is a stop of its own, put in the order where it reads -
+        // moved with Earlier and Later - and opened.
+        if (seq != null && seq.none { inside(it) } && width > 0 && height > 0) {
+            val stop = BubbleZoom.manual(page, width, height, rect, dockRegion(page), bubbleContext)
+            if (stop != null) {
+                stop.panelStop = true
+                stop.panel = rect.copyOf()
+                val list = seq.toMutableList()
+                val at = BubbleZoom.orderIndex(page, width, height, list.map { it.bounds }, stop.bounds, isReversed)
+                list.add(at, stop)
+                sequence = list
+                logEdit(page, "panel stop at ${at + 1}")
+                scope?.launch {
+                    withFrameClock {
+                        val current = bubble
+                        if (current != null && current.page === page) {
+                            switchBubble(current, stop.fresh())
+                        } else {
+                            open(stop.fresh())
+                        }
+                    }
+                }
+            }
+        }
         if (handPanelsPage !== page) {
             handPanels = ArrayList(BubbleZoom.panelsOf(page, width, height))
             handPanelsPage = page
@@ -956,6 +1038,14 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
                     switchBubble(current, all[at + 1].fresh())
                     return true
                 }
+                // KMK -->
+                // Fixes made on the page: asked whether to send them before it turns.
+                if (fixPage === page && fixed.isNotEmpty() && sendPrompt == 0) {
+                    sendPrompt = fixed.size
+                    return true
+                }
+                if (sendPrompt > 0) return true
+                // KMK <--
                 dropBubble()
                 guidedDonePage = page
                 return false
@@ -1443,6 +1533,8 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         pressMenu = null
         report = null
         drawingPanel = false
+        // Turned past the question, or before it came up: the page's fixes go as they are.
+        flushFixes()
         if (debugTemporary) {
             debugTemporary = false
             bubbleDebug = false

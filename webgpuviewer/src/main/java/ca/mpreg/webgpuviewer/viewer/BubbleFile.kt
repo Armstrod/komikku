@@ -28,7 +28,7 @@ interface BubbleStore {
  */
 internal object BubbleFile {
     private const val MAGIC = 0x42554231 // "BUB1"
-    private const val VERSION = 2
+    private const val VERSION = 3
 
     /** What a file holds: the bubbles, and the panels drawn by hand on the image (map pixels). */
     class Kept(val items: List<BubbleZoom.Item>, val panels: List<IntArray>)
@@ -94,6 +94,8 @@ internal object BubbleFile {
                 runs += run
                 out.writeInt(runs.size)
                 for (r in runs) out.writeInt(r)
+                // Version 3: a panel stop.
+                out.writeBoolean(item.panelStop)
             }
             // Version 2: panels drawn by hand.
             out.writeInt(panels.size)
@@ -175,7 +177,9 @@ internal object BubbleFile {
                     lettered = lettered,
                     letterHeight = letterHeight,
                 )
-                items += BubbleZoom.Item(found, text, intArrayOf(x0, y0, x0 + fw, y0 + fh), panel, letterHeight)
+                val panelStop = version >= 3 && input.readBoolean()
+                val box = intArrayOf(x0, y0, x0 + fw, y0 + fh)
+                items += BubbleZoom.Item(found, text, box, panel, letterHeight, panelStop)
             }
             val panels = if (version >= 2) {
                 List(input.readInt()) {

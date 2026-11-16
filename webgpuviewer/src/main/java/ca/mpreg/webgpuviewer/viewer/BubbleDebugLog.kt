@@ -84,6 +84,12 @@ object BubbleDebugLog {
         pages[label]?.ocr = blocks
     }
 
+    /** A note in [label]'s edits - a fix finished, say. */
+    @Synchronized
+    fun note(label: String, note: String) {
+        pages[label]?.edits?.add(note)
+    }
+
     /** A panel on [label]'s page drawn by hand: [bounds] on image [image]. */
     @Synchronized
     fun panel(label: String, image: Int, bounds: FloatArray) {
