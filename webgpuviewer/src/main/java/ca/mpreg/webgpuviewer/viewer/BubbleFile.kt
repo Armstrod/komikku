@@ -35,7 +35,10 @@ internal object BubbleFile {
         val items: List<BubbleZoom.Item>,
         val panels: List<IntArray>,
         val shapes: List<FloatArray>,
-        /** The file's version: before 5, panels with no bubbles weren't stops; before 6, panels weren't split where bubbles cross gutters. */
+        /**
+         * The file's version: before 5, panels with no bubbles weren't stops; before 6, panels
+         * weren't split where bubbles cross the gutters.
+         */
         val version: Int = VERSION,
     )
 
