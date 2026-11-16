@@ -27,6 +27,8 @@ object BubbleDebugLog {
         val frame: FloatArray? = null,
         /** How tall its letters were measured, as a share of the image's height. */
         val letterHeight: Float = 0f,
+        /** The panel it was framed with, as found or corrected - bounds on the image. */
+        val panel: FloatArray? = null,
     )
 
     /** Lettering text recognition found on a whole page, bubble or not: image, bounds, text. */
@@ -43,6 +45,9 @@ object BubbleDebugLog {
         val edits = ArrayList<String>()
         var ocr: List<Ocr> = emptyList()
         var updated = System.currentTimeMillis()
+
+        /** Panels drawn by hand: image, bounds on it. */
+        val panels = ArrayList<Pair<Int, FloatArray>>()
     }
 
     private val pages = LinkedHashMap<String, PageRecord>()
@@ -79,6 +84,15 @@ object BubbleDebugLog {
         pages[label]?.ocr = blocks
     }
 
+    /** A panel on [label]'s page drawn by hand: [bounds] on image [image]. */
+    @Synchronized
+    fun panel(label: String, image: Int, bounds: FloatArray) {
+        val record = pages[label] ?: return
+        record.panels += image to bounds
+        record.edits += "panel ${record.panels.size}"
+        record.updated = System.currentTimeMillis()
+    }
+
     @Synchronized
     fun clear() = pages.clear()
 
@@ -87,10 +101,30 @@ object BubbleDebugLog {
         dir.mkdirs()
         val out = File(dir, "bubble-debug-${System.currentTimeMillis()}.zip")
         val snapshot = synchronized(this) { pages.values.toList() }
+        write(out, snapshot, null)
+        return out
+    }
+
+    /**
+     * A report of one problem on [label]'s page, as a zip in [dir]: the page alone, with
+     * [report] - what kind of problem, the app's version and so on - in its log. Null where
+     * the page isn't logged.
+     */
+    fun exportReport(label: String, dir: File, report: Map<String, String>): File? {
+        val record = synchronized(this) { pages[label] } ?: return null
+        dir.mkdirs()
+        val kind = report["problem"].orEmpty().replace(Regex("[^a-z0-9]+"), "-").trim('-')
+        val out = File(dir, "report-${System.currentTimeMillis()}-$kind.zip")
+        write(out, listOf(record), JSONObject(report))
+        return out
+    }
+
+    private fun write(out: File, snapshot: List<PageRecord>, report: JSONObject?) {
         ZipOutputStream(out.outputStream().buffered()).use { zip ->
             val log = JSONObject()
-            log.put("version", 3)
+            log.put("version", 4)
             log.put("exported", System.currentTimeMillis())
+            report?.let { log.put("report", it) }
             val list = JSONArray()
             snapshot.forEachIndexed { n, record ->
                 val names = record.images.indices.map { "images/page-${(n + 1).toString().padStart(3, '0')}-$it.jpg" }
@@ -122,6 +156,19 @@ object BubbleDebugLog {
                                 }
                             },
                         )
+                        put(
+                            "panels",
+                            JSONArray().apply {
+                                record.panels.forEach { (image, bounds) ->
+                                    put(
+                                        JSONObject().apply {
+                                            put("image", image)
+                                            put("bounds", rounded(bounds))
+                                        },
+                                    )
+                                }
+                            },
+                        )
                         put("corrected", record.edits.isNotEmpty())
                     },
                 )
@@ -131,7 +178,6 @@ object BubbleDebugLog {
             zip.write(log.toString(2).toByteArray())
             zip.closeEntry()
         }
-        return out
     }
 
     private fun boxes(list: List<Box>): JSONArray = JSONArray().apply {
@@ -145,6 +191,7 @@ object BubbleDebugLog {
                     put("manual", box.manual)
                     box.frame?.let { f -> put("frame", rounded(f)) }
                     if (box.letterHeight > 0f) put("letterHeight", (box.letterHeight * 100000f).roundToInt() / 100000.0)
+                    box.panel?.let { put("panel", rounded(it)) }
                 },
             )
         }

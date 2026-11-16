@@ -58,6 +58,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -342,21 +343,8 @@ internal object BubbleZoom {
         val pages = ArrayList<List<BubbleOverlay>>()
         page.forEachImage { image, offsetX, imageScale ->
             val map = image.inkMap ?: return@forEachImage
-            val placeX = (page.x + offsetX / screenWidth + WebGpuRenderer.offsetX) / imageScale -
-                WebGpuRenderer.offsetX
-            val placeY = (page.y + WebGpuRenderer.offsetY) / imageScale - WebGpuRenderer.offsetY
-            val imageRect = image.placement(
-                screenWidth,
-                screenHeight,
-                placeX,
-                placeY,
-                page.scale * imageScale,
-            )
-            val openEdge = when {
-                page !is ImagePage.ImageSpread -> BubbleDetect.NO_EDGE
-                offsetX < 0f -> BubbleDetect.RIGHT_EDGE
-                else -> BubbleDetect.LEFT_EDGE
-            }
+            val imageRect = imageRectOf(page, offsetX, imageScale, image, screenWidth, screenHeight)
+            val openEdge = openEdgeOf(page, offsetX)
             val placed = ArrayList<BubbleOverlay>()
             val boxes = ArrayList<IntArray>()
             // Found, read and ordered once per image - see [found] - and only placed here.
@@ -404,6 +392,79 @@ internal object BubbleZoom {
         return pages.flatten()
     }
 
+    /** Where [image] of [page] sits on screen, normalised. */
+    private fun imageRectOf(
+        page: ImagePage.ImageSingle,
+        offsetX: Float,
+        imageScale: Float,
+        image: Image,
+        screenWidth: Int,
+        screenHeight: Int,
+    ): FloatArray {
+        val placeX = (page.x + offsetX / screenWidth + WebGpuRenderer.offsetX) / imageScale -
+            WebGpuRenderer.offsetX
+        val placeY = (page.y + WebGpuRenderer.offsetY) / imageScale - WebGpuRenderer.offsetY
+        return image.placement(screenWidth, screenHeight, placeX, placeY, page.scale * imageScale)
+    }
+
+    /** Which edge of the image at [offsetX] in [page] is the fold of a spread, if any. */
+    private fun openEdgeOf(page: ImagePage.ImageSingle, offsetX: Float) = when {
+        page !is ImagePage.ImageSpread -> BubbleDetect.NO_EDGE
+        offsetX < 0f -> BubbleDetect.RIGHT_EDGE
+        else -> BubbleDetect.LEFT_EDGE
+    }
+
+    // KMK -->
+    /**
+     * [page]'s bubbles as corrected by the reader - [list], in its order, with the panels set
+     * on them - kept in place of what was found, in memory and in [store], so the page opens
+     * corrected next time. Bubbles found keep their shape; ones drawn by hand are boxes.
+     */
+    fun keep(
+        page: ImagePage.ImageSingle,
+        screenWidth: Int,
+        screenHeight: Int,
+        rightToLeft: Boolean,
+        list: List<BubbleOverlay>,
+    ) {
+        page.forEachImage { image, offsetX, imageScale ->
+            val map = image.inkMap ?: return@forEachImage
+            val r = imageRectOf(page, offsetX, imageScale, image, screenWidth, screenHeight)
+            val openEdge = openEdgeOf(page, offsetX)
+            val sx = map.width / (r[2] - r[0])
+            val sy = map.height / (r[3] - r[1])
+            fun toMap(b: FloatArray) = intArrayOf(
+                ((b[0] - r[0]) * sx).toInt().coerceIn(0, map.width - 1),
+                ((b[1] - r[1]) * sy).toInt().coerceIn(0, map.height - 1),
+                ((b[2] - r[0]) * sx).toInt().coerceIn(1, map.width),
+                ((b[3] - r[1]) * sy).toInt().coerceIn(1, map.height),
+            )
+            val before = synchronized(cache) { cache[map]?.items }.orEmpty()
+            val items = list
+                .filter { b -> b.centerX >= r[0] && b.centerX < r[2] && b.centerY >= r[1] && b.centerY < r[3] }
+                .map { b ->
+                    val box = toMap(b.bounds)
+                    val was = before.firstOrNull { item -> (0..3).all { abs(item.box[it] - box[it]) <= KEEP_SLACK } }
+                    val panel = b.panel?.let { toMap(it) }
+                    val letters = b.letterHeight / (r[3] - r[1]) * map.height
+                    if (was != null && !b.manual) {
+                        Item(was.found, b.text ?: was.text, was.box, panel ?: was.panel, was.letterHeight)
+                    } else {
+                        val w = (box[2] - box[0]).coerceAtLeast(1)
+                        val h = (box[3] - box[1]).coerceAtLeast(1)
+                        val mask = ByteArray(w * h) { (-1).toByte() }
+                        val found = BubbleDetect.Found(box[0], box[1], w, h, mask, true, letters)
+                        Item(found, b.text, intArrayOf(box[0], box[1], box[0] + w, box[1] + h), panel, letters)
+                    }
+                }
+            synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, items) }
+            val key = keyOf?.invoke(image) ?: return@forEachImage
+            runCatching { store?.write(key, BubbleFile.encode(map, rightToLeft, items)) }
+                .onFailure { Log.w("BubbleZoom", "Couldn't keep corrected bubbles", it) }
+        }
+    }
+    // KMK <--
+
     /** A bubble found on an image's map, what was read in it, and its bounds there. */
     class Item(
         val found: BubbleDetect.Found,
@@ -416,6 +477,9 @@ internal object BubbleZoom {
     )
 
     private class Cached(val openEdge: Int, val rightToLeft: Boolean, val items: List<Item>)
+
+    /** How far, in map pixels, a corrected bubble's box may be from the one found to be it. */
+    private const val KEEP_SLACK = 3
 
     /** Where found bubbles are kept between sessions - see [BubbleStore]. Set by the app. */
     @Volatile

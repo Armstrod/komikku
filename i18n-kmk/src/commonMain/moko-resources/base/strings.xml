@@ -274,6 +274,10 @@
     <string name="pref_bubble_follow_panel">Keep the view to the panel</string>
     <string name="pref_bubble_follow_panel_summary">Show the whole panel when it fits with readable text, so stepping between its bubbles keeps the view still. When it\'s too big, the view stays inside the panel and moves only as far as the next bubble needs, rather than jumping to centre each one</string>
     <string name="pref_bubble_debug">Bubble debug mode</string>
+    <string name="pref_bubble_report_repo">Problem reports repository</string>
+    <string name="pref_bubble_report_repo_summary">%s - long-press while stepping through bubbles to report a problem. Reports upload here as files</string>
+    <string name="pref_bubble_report_token">Problem reports token</string>
+    <string name="pref_bubble_report_token_summary">A GitHub token that can write that repository\'s contents. Kept on this phone only. Without one, reports wait here</string>
     <string name="pref_bubble_debug_summary">Outline and number every bubble found, correct the order, delete or add bubbles, and export a log of the pages and corrections</string>
     <string name="pref_panel_zoom">Zoom to panel</string>
     <string name="pref_panel_zoom_summary">The bubble gesture on artwork zooms to the panel under it. Where no panel is found, it zooms in as usual</string>

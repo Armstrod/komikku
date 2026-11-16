@@ -4,6 +4,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.PointF
 import android.graphics.Rect
+import android.os.Build
 import android.os.SystemClock
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -39,10 +40,13 @@ import ca.mpreg.webgpuviewer.transition.TransitionStackLeft
 import ca.mpreg.webgpuviewer.transition.TransitionStackRight
 import ca.mpreg.webgpuviewer.transition.TransitionStackUp
 import ca.mpreg.webgpuviewer.viewer.BubbleDebugLog
+import ca.mpreg.webgpuviewer.viewer.BubbleProblem
 import ca.mpreg.webgpuviewer.viewer.BubbleScan
 import ca.mpreg.webgpuviewer.viewer.ImagePage
 import ca.mpreg.webgpuviewer.viewer.ImageViewerContinuousState
 import com.google.android.material.color.MaterialColors
+import eu.kanade.tachiyomi.BuildConfig
+import eu.kanade.tachiyomi.data.bubble.BubbleReportJob
 import eu.kanade.tachiyomi.data.bubble.BubbleScanJob
 import eu.kanade.tachiyomi.data.bubble.BubbleScanStore
 import eu.kanade.tachiyomi.source.model.Page
@@ -1054,10 +1058,12 @@ open class WebGpuViewer(
             onGuidedSwipe = { step -> guidedStep(step) }
 
             onLongTap = longTap@{ offset ->
-                // Stepping through bubbles, a long press marks lettering the finder missed: it
-                // looks again there, harder - see ImageViewerState.findMissed.
+                // Stepping through bubbles, a long press offers to look again there for lettering
+                // the finder missed - see ImageViewerState.findMissed - or to report a problem.
                 if (guidedActive() && !activity.viewModel.state.value.menuVisible) {
-                    this@WebGpuViewer.scope.launch { pager.state.findMissed(offset) }
+                    // KMK -->
+                    pager.state.pressMenu = offset
+                    // KMK <--
                     return@longTap
                 }
                 fun pageMenu() {
@@ -1108,6 +1114,11 @@ open class WebGpuViewer(
         }
         pager.state.pageLabel = ::debugPageLabel
         pager.state.onDebugExport = ::exportBubbleDebug
+        // KMK -->
+        pager.state.onReport = ::sendBubbleReport
+        // Reports left waiting - written offline, or before a token was set - go now.
+        if (BubbleReportJob.queueDir(activity).list()?.isNotEmpty() == true) BubbleReportJob.enqueue(activity)
+        // KMK <--
 
         applyBubbleZoom()
         config.bubbleZoomChangedListener = ::applyBubbleZoom
@@ -2159,6 +2170,46 @@ open class WebGpuViewer(
     // KMK <--
 
     /** The page on screen, named for the bubble debug log: book, chapter and page number. */
+    // KMK -->
+    /** A problem reported on a page: written out as a one-page log and queued to upload. */
+    private fun sendBubbleReport(label: String, problem: BubbleProblem) {
+        scope.launch {
+            val meta = mapOf(
+                "problem" to problem.key,
+                "page" to label,
+                "app" to BuildConfig.VERSION_NAME,
+                "device" to "${Build.MANUFACTURER} ${Build.MODEL}",
+                "sdk" to Build.VERSION.SDK_INT.toString(),
+                "screen" to "${activity.resources.displayMetrics.widthPixels}x" +
+                    "${activity.resources.displayMetrics.heightPixels}",
+                "settings" to bubbleSettingsSummary(),
+            )
+            val file = withContext(Dispatchers.IO) {
+                runCatching { BubbleDebugLog.exportReport(label, BubbleReportJob.queueDir(activity), meta) }
+                    .getOrNull()
+            }
+            if (file == null) {
+                activity.toast("Couldn't write the report")
+                return@launch
+            }
+            val sending = BubbleReportJob.enqueue(activity)
+            activity.toast(
+                if (sending) "Report saved - it uploads when online" else "Report saved - set a token to upload it",
+            )
+        }
+    }
+
+    /** The bubble settings in force, for a report. */
+    private fun bubbleSettingsSummary(): String = listOf(
+        "dock=${config.bubbleDock}",
+        "context=${config.bubbleContext}",
+        "minText=${config.bubbleMinTextHeight}",
+        "showPanel=${config.bubbleShowPanel}",
+        "followPanel=${config.bubbleFollowPanel}",
+        "dim=${if (config.bubbleHideUpcoming) config.bubbleDimStrength else 0}",
+    ).joinToString(",")
+    // KMK <--
+
     private fun debugPageLabel(): String? {
         val page = (currentPage as? ViewerReaderPage)?.page ?: return null
         val title = activity.viewModel.manga?.title.orEmpty()

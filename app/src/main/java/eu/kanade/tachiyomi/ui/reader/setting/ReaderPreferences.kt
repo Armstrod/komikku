@@ -263,6 +263,12 @@ class ReaderPreferences(
     /** Docked bubbles show with the artwork round them, filling the room below the page. */
     fun bubbleContext() = preferenceStore.getBoolean("webgpu_bubble_context", true)
 
+    /** Where bubble problem reports upload: a GitHub repository, "owner/name". */
+    fun bubbleReportRepo() = preferenceStore.getString("webgpu_bubble_report_repo", "Armstrod/komikku-reports")
+
+    /** A GitHub token allowed to write that repository's contents. Empty: reports wait on the phone. */
+    fun bubbleReportToken() = preferenceStore.getString("webgpu_bubble_report_token", "")
+
     /** Every bubble found outlined and numbered, with tools to correct them and a log to export. */
     fun bubbleDebug() = preferenceStore.getBoolean("webgpu_bubble_debug", false)
 

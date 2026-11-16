@@ -432,6 +432,118 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     /** Debug mode turned on for one page from [missPrompt], off again when it turns. */
     private var debugTemporary = false
 
+    // KMK -->
+    /** A long press while stepping through bubbles: where, normalised, while its menu shows. */
+    var pressMenu: Offset? by mutableStateOf(null)
+
+    /**
+     * The problem being reported on the page on screen - see [startReport] - while the debug
+     * tools are out to correct it; null otherwise.
+     */
+    var report: BubbleProblem? by mutableStateOf(null)
+        private set
+
+    /** Debug: drawing the panel a bubble belongs in, rather than a missed bubble. */
+    var drawingPanel: Boolean by mutableStateOf(false)
+
+    /** A report finished: the page's debug log [label] and the [problem] - the app sends it. */
+    var onReport: ((label: String, problem: BubbleProblem) -> Unit)? = null
+
+    /**
+     * Reports [problem] on the page on screen: the debug tools come out for this page alone -
+     * see [finishReport] - with the page logged as found, before any correction.
+     */
+    fun startReport(problem: BubbleProblem) {
+        val press = pressMenu
+        pressMenu = null
+        missPrompt = null
+        val page = getPage(0) as? ImagePage.ImageSingle ?: return
+        if (!bubbleDebug) {
+            bubbleDebug = true
+            debugTemporary = true
+        }
+        report = problem
+        drawingPanel = problem == BubbleProblem.PANEL
+        if (problem == BubbleProblem.MISSED && press != null) {
+            debugDraft = floatArrayOf(
+                (press.x - 0.12f).coerceAtLeast(0f),
+                (press.y - 0.06f).coerceAtLeast(0f),
+                (press.x + 0.12f).coerceAtMost(1f),
+                (press.y + 0.06f).coerceAtMost(1f),
+            )
+            debugAdding = true
+        }
+        scope?.launch {
+            withFrameClock {
+                val seq = bubble?.takeIf { it.page === page }?.let { sequenceFor(page, it) } ?: sequenceOf(page)
+                if (getPage(0) === page) startDebugLog(page, seq)
+                publishDebug()
+            }
+        }
+    }
+
+    /**
+     * The report is done: its corrections are kept for the page - see [BubbleZoom.keep] - it
+     * goes to [onReport], and reading carries on as before.
+     */
+    fun finishReport() {
+        val problem = report ?: return
+        val page = debugPage as? ImagePage.ImageSingle
+        val label = debugLabel
+        val seq = sequence?.takeIf { sequencePage === page }
+        if (page != null && seq != null && width > 0 && height > 0) {
+            val w = width
+            val h = height
+            val rtl = isReversed
+            val list = seq.toList()
+            scope?.launch(Dispatchers.Default) {
+                runCatching { BubbleZoom.keep(page, w, h, rtl, list) }
+                    .onFailure { Log.w("ImageViewerState", "Keeping corrections failed", it) }
+            }
+        }
+        if (label != null) onReport?.invoke(label, problem)
+        endReport()
+    }
+
+    /** The report dropped: nothing sent, the debug tools put away. */
+    fun cancelReport() {
+        if (report == null) return
+        endReport()
+    }
+
+    private fun endReport() {
+        report = null
+        drawingPanel = false
+        debugAdding = false
+        debugDraft = null
+        if (debugTemporary) {
+            debugTemporary = false
+            bubbleDebug = false
+            publishDebug()
+        }
+    }
+
+    /**
+     * Debug: [rect] on screen (normalised) is a panel - every bubble in it is framed with it
+     * from now on, and it is logged.
+     */
+    fun debugPanel(rect: FloatArray) {
+        drawingPanel = false
+        val page = getPage(0) as? ImagePage.ImageSingle ?: return
+        fun inside(b: BubbleOverlay) = b.centerX in rect[0]..rect[2] && b.centerY in rect[1]..rect[3]
+        sequence?.takeIf { sequencePage === page }?.forEach { if (inside(it)) it.panel = rect.copyOf() }
+        bubble?.takeIf { it.page === page && inside(it) }?.panel = rect.copyOf()
+        val label = debugLabel?.takeIf { debugPage === page } ?: return
+        BubbleZoom.onImage(page, width, height, rect)?.let { (image, bounds) ->
+            BubbleDebugLog.panel(label, image, bounds)
+        }
+        // Framed again with the panel as now drawn.
+        bubble?.takeIf { it.page === page && cameraMode(it) }?.let { b ->
+            frameFor(b, null)?.let { moveCamera(it) }
+        }
+    }
+    // KMK <--
+
     /** Debug: a box to start [debugAdding] from, normalised - round a long press, say. */
     var debugDraft: FloatArray? by mutableStateOf(null)
 
@@ -990,7 +1102,8 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             // As a share of the image's height, as the bounds are.
             val screenHeight = b.bounds[3] - b.bounds[1]
             val letter = if (screenHeight > 0f) b.letterHeight * (bounds[3] - bounds[1]) / screenHeight else 0f
-            BubbleDebugLog.Box(image, bounds, b.text, b.manual, frame, letter)
+            val panel = b.panel?.let { p -> BubbleZoom.onImage(page, w, h, p)?.second }
+            BubbleDebugLog.Box(image, bounds, b.text, b.manual, frame, letter, panel)
         }
     }
 
@@ -1292,6 +1405,9 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         debugAdding = false
         debugDraft = null
         missPrompt = null
+        pressMenu = null
+        report = null
+        drawingPanel = false
         if (debugTemporary) {
             debugTemporary = false
             bubbleDebug = false

@@ -67,6 +67,7 @@ private val Active = Color(0xFFE53935)
 private val Found = Color(0xFF1E88E5)
 private val Draft = Color(0xFFFFC400)
 private val Chip = Color(0xE0202020)
+private val PanelFound = Color(0xFF43A047)
 
 /** How long a bubble stepped to takes to shed its veil. */
 private const val REVEAL_MS = 180
@@ -99,6 +100,21 @@ internal fun BubbleUi(state: ImageViewerState) {
         Canvas(Modifier.fillMaxSize()) {
             marks.forEachIndexed { i, b -> if (i != active) shape(b.outlineImage, b.bounds, Found) }
             marks.getOrNull(active)?.let { shape(it.outlineImage, it.bounds, Active) }
+            // Reporting a panel: the panels found, each once, to draw the right one against.
+            if (state.report == BubbleProblem.PANEL) {
+                val seen = ArrayList<FloatArray>()
+                for (m in marks) {
+                    val p = m.panel ?: continue
+                    if (seen.any { it.contentEquals(p) }) continue
+                    seen += p
+                    drawRect(
+                        color = PanelFound,
+                        topLeft = Offset(p[0] * size.width, p[1] * size.height),
+                        size = Size((p[2] - p[0]) * size.width, (p[3] - p[1]) * size.height),
+                        style = Stroke(width = 2.dp.toPx()),
+                    )
+                }
+            }
             // Docked but not among the marks - one opened by hand, say: its box at least.
             if (outline != null && active < 0) {
                 drawRect(
@@ -217,9 +233,26 @@ internal fun BubbleUi(state: ImageViewerState) {
                             state.debugAdding = !state.debugAdding
                         }
                         DebugAction.EXPORT -> state.onDebugExport?.invoke()
+                        DebugAction.PANEL -> {
+                            state.drawingPanel = !state.drawingPanel
+                        }
+                        DebugAction.DONE -> state.finishReport()
+                        DebugAction.CANCEL -> state.cancelReport()
                     }
                 }
             }
+        }
+
+        if (debug && state.drawingPanel && !state.debugAdding) {
+            DrawBox(
+                width,
+                height,
+                initial = null,
+                prompt = "Drag a box round the whole panel",
+                confirm = "Set panel",
+                onBox = { rect -> state.debugPanel(rect) },
+                onCancel = { state.drawingPanel = false },
+            )
         }
 
         if (debug && state.debugAdding) {
@@ -235,6 +268,18 @@ internal fun BubbleUi(state: ImageViewerState) {
                     state.debugDraft = null
                     state.debugAdding = false
                 },
+            )
+        }
+
+        state.pressMenu?.let { press ->
+            PressMenu(
+                Modifier.align(Alignment.Center),
+                onFind = {
+                    state.pressMenu = null
+                    scope.launch { state.findMissed(press) }
+                },
+                onReport = { state.startReport(it) },
+                onCancel = { state.pressMenu = null },
             )
         }
 
@@ -315,24 +360,87 @@ private fun MissPrompt(modifier: Modifier, onMark: () -> Unit, onCancel: () -> U
     }
 }
 
-private enum class DebugAction { EARLIER, LATER, DELETE, ADD, EXPORT }
+// KMK -->
+/**
+ * A long press while stepping through bubbles: look for missed text there, as before, or
+ * report a problem with the page - see [ImageViewerState.startReport].
+ */
+@Composable
+private fun PressMenu(
+    modifier: Modifier,
+    onFind: () -> Unit,
+    onReport: (BubbleProblem) -> Unit,
+    onCancel: () -> Unit,
+) {
+    Column(
+        modifier = modifier
+            .padding(24.dp)
+            .background(Chip, RoundedCornerShape(10.dp))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        ToolChip("Find missed text here", enabled = true, onClick = onFind)
+        BasicText(
+            "Report a problem",
+            style = TextStyle(color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold),
+        )
+        BubbleProblem.entries.groupBy { it.group }.forEach { (group, problems) ->
+            BasicText(group, style = TextStyle(color = Color(0xFFBDBDBD), fontSize = 12.sp))
+            problems.forEach { problem -> ToolChip(problem.label, enabled = true) { onReport(problem) } }
+        }
+        ToolChip("Cancel", enabled = true, onClick = onCancel)
+    }
+}
+// KMK <--
+
+private enum class DebugAction { EARLIER, LATER, DELETE, ADD, EXPORT, PANEL, DONE, CANCEL }
 
 @Composable
 private fun DebugToolbar(state: ImageViewerState, modifier: Modifier, onAction: (DebugAction) -> Unit) {
     val open = state.debugActive >= 0
-    Row(
+    val report = state.report
+    Column(
         modifier = modifier.fillMaxWidth().padding(horizontal = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
-        verticalAlignment = Alignment.CenterVertically,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        val count = state.debugRects.size
-        val place = if (open) "${state.debugActive + 1}/$count" else "$count found"
-        ToolChip(place, enabled = false) {}
-        ToolChip("◀ Earlier", enabled = open) { onAction(DebugAction.EARLIER) }
-        ToolChip("Later ▶", enabled = open) { onAction(DebugAction.LATER) }
-        ToolChip("Delete", enabled = open) { onAction(DebugAction.DELETE) }
-        ToolChip(if (state.debugAdding) "Cancel" else "Add", enabled = true) { onAction(DebugAction.ADD) }
-        ToolChip("Export (${state.debugLogged})", enabled = true) { onAction(DebugAction.EXPORT) }
+        // KMK -->
+        if (report != null) {
+            BasicText(
+                text = "${report.label}: ${report.hint}",
+                style = TextStyle(color = Color.White, fontSize = 13.sp),
+                modifier = Modifier
+                    .background(Chip, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+        }
+        // KMK <--
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val count = state.debugRects.size
+            val place = if (open) "${state.debugActive + 1}/$count" else "$count found"
+            ToolChip(place, enabled = false) {}
+            ToolChip("◀ Earlier", enabled = open) { onAction(DebugAction.EARLIER) }
+            ToolChip("Later ▶", enabled = open) { onAction(DebugAction.LATER) }
+            ToolChip("Delete", enabled = open) { onAction(DebugAction.DELETE) }
+            ToolChip(if (state.debugAdding) "Cancel" else "Add", enabled = true) { onAction(DebugAction.ADD) }
+            if (report == null) {
+                ToolChip("Export (${state.debugLogged})", enabled = true) { onAction(DebugAction.EXPORT) }
+            }
+        }
+        // KMK -->
+        if (report != null) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)) {
+                ToolChip(if (state.drawingPanel) "Cancel panel" else "Draw panel", enabled = true) {
+                    onAction(DebugAction.PANEL)
+                }
+                ToolChip("Done - send report", enabled = true) { onAction(DebugAction.DONE) }
+                ToolChip("Cancel", enabled = true) { onAction(DebugAction.CANCEL) }
+            }
+        }
+        // KMK <--
     }
 }
 
@@ -363,6 +471,8 @@ private fun DrawBox(
     initial: FloatArray?,
     onBox: (FloatArray) -> Unit,
     onCancel: () -> Unit,
+    prompt: String = "Drag a box around the missed text",
+    confirm: String = "Add",
 ) {
     // In pixels: left, top, right, bottom.
     var box by remember(initial) {
@@ -409,7 +519,7 @@ private fun DrawBox(
             },
     ) {
         BasicText(
-            text = if (box == null) "Drag a box around the missed text" else "Drag the corners to fit, then Add",
+            text = if (box == null) prompt else "Drag the corners to fit, then $confirm",
             style = TextStyle(color = Color.White, fontSize = 14.sp),
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -435,7 +545,7 @@ private fun DrawBox(
         ) {
             val b = box
             val big = b != null && abs(b[2] - b[0]) > 0.02f * width && abs(b[3] - b[1]) > 0.01f * height
-            ToolChip("Add", enabled = big) {
+            ToolChip(confirm, enabled = big) {
                 val r = box ?: return@ToolChip
                 onBox(floatArrayOf(r[0] / width, r[1] / height, r[2] / width, r[3] / height))
             }
