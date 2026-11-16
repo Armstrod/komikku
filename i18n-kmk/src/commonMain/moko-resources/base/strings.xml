@@ -277,6 +277,8 @@
     <string name="pref_bubble_report_repo">Problem reports repository</string>
     <string name="pref_bubble_report_repo_summary">%s - long-press while stepping through bubbles to report a problem. Reports upload here as files</string>
     <string name="pref_bubble_report_token">Problem reports token</string>
+    <string name="bubble_report_token_unset">Not set - reports wait on this phone</string>
+    <string name="bubble_report_token_set">Set</string>
     <string name="pref_bubble_report_token_summary">A GitHub token that can write that repository\'s contents. Kept on this phone only. Without one, reports wait here</string>
     <string name="pref_bubble_debug_summary">Outline and number every bubble found, correct the order, delete or add bubbles, and export a log of the pages and corrections</string>
     <string name="pref_panel_zoom">Zoom to panel</string>

@@ -10,6 +10,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import eu.kanade.domain.manga.model.readerOrientation
 import eu.kanade.domain.manga.model.readingMode
+import eu.kanade.presentation.more.settings.widget.EditTextPreferenceWidget
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderOrientation
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderSettingsScreenModel
@@ -298,6 +299,34 @@ private fun ColumnScope.WebGpuViewerSettings(screenModel: ReaderSettingsScreenMo
                 label = stringResource(KMR.strings.pref_bubble_debug),
                 pref = screenModel.preferences.bubbleDebug(),
             )
+            // KMK -->
+            val reportRepo by screenModel.preferences.bubbleReportRepo().collectAsState()
+            EditTextPreferenceWidget(
+                title = stringResource(KMR.strings.pref_bubble_report_repo),
+                subtitle = reportRepo,
+                icon = null,
+                value = reportRepo,
+                onConfirm = {
+                    screenModel.preferences.bubbleReportRepo().set(it.trim())
+                    true
+                },
+            )
+            val reportToken by screenModel.preferences.bubbleReportToken().collectAsState()
+            EditTextPreferenceWidget(
+                title = stringResource(KMR.strings.pref_bubble_report_token),
+                subtitle = if (reportToken.isBlank()) {
+                    stringResource(KMR.strings.bubble_report_token_unset)
+                } else {
+                    stringResource(KMR.strings.bubble_report_token_set)
+                },
+                icon = null,
+                value = reportToken,
+                onConfirm = {
+                    screenModel.preferences.bubbleReportToken().set(it.trim())
+                    true
+                },
+            )
+            // KMK <--
         }
         CheckboxItem(
             label = stringResource(KMR.strings.pref_panel_zoom),
