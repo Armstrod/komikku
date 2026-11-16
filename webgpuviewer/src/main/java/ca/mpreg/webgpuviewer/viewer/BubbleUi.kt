@@ -198,27 +198,31 @@ internal fun BubbleUi(state: ImageViewerState) {
                     modifier = Modifier
                         .offset { IntOffset((right * width - chip).roundToInt(), (top * height).roundToInt()) }
                         .background(
-                            if (state.report == BubbleProblem.PANELS && i == state.panelActive) Active else PanelColor,
+                            when {
+                                state.report == BubbleProblem.PANELS -> {
+                                    if (i == state.panelActive) Active else PanelColor
+                                }
+                                // The panel being read: the open stop's own, or the open bubble's.
+                                i == state.debugActivePanel -> Active
+                                else -> PanelColor
+                            },
                             RoundedCornerShape(3.dp),
                         )
                         .padding(horizontal = 4.dp, vertical = 1.dp),
                 )
             }
+            // Bubbles numbered in their order; a panel stop has no number - it's its panel, whose
+            // P label goes red while it's open.
+            var number = 0
             state.debugRects.forEachIndexed { i, r ->
+                if (i in state.debugStops) return@forEachIndexed
+                number++
                 BasicText(
-                    text = "${i + 1}",
+                    text = "$number",
                     style = TextStyle(color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold),
                     modifier = Modifier
                         .offset { IntOffset((r[0] * width).roundToInt(), (r[1] * height).roundToInt()) }
-                        .background(
-                            when {
-                                i == state.debugActive -> Active
-                                // A panel stop's number in the panels' green: no bubble there.
-                                i in state.debugStops -> PanelColor
-                                else -> Found
-                            },
-                            RoundedCornerShape(3.dp),
-                        )
+                        .background(if (i == state.debugActive) Active else Found, RoundedCornerShape(3.dp))
                         .padding(horizontal = 5.dp, vertical = 1.dp),
                 )
             }

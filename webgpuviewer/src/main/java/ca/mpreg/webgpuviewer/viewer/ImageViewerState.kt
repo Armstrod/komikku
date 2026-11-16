@@ -376,6 +376,10 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     var debugRects: List<FloatArray> by mutableStateOf(emptyList())
         private set
 
+    /** The panel in [debugPanelOrder] holding the open stop, or -1. */
+    var debugActivePanel: Int by mutableStateOf(-1)
+        private set
+
     /** Which of [debugRects] are panel stops. */
     var debugStops: Set<Int> by mutableStateOf(emptySet())
         private set
@@ -445,6 +449,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             if (debugPanels.isNotEmpty()) debugPanels = emptyList()
             if (debugHandPanels.isNotEmpty()) debugHandPanels = emptyList()
             if (debugPanelOrder.isNotEmpty()) debugPanelOrder = emptyList()
+            debugActivePanel = -1
             return
         }
         debugRects = seq.map { it.bounds }
@@ -485,6 +490,12 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         // panels drawn by hand and not yet in it after.
         val listed = hand.map { rect(it) }.filter { h -> found.none { same(it, h) } }
         debugPanelOrder = found + listed
+        val reading = seq.getOrNull(active)
+        debugActivePanel = if (reading == null) {
+            -1
+        } else {
+            debugPanelOrder.indexOfFirst { BubbleZoom.inPolygon(it, reading.centerX, reading.centerY) }
+        }
         // KMK <--
     }
 

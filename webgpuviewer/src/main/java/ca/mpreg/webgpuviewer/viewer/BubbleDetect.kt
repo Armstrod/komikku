@@ -828,8 +828,14 @@ internal object BubbleDetect {
     /** A detected frame takes a cut shape's slanted edges where their bounds overlap this much. */
     private const val FRAME_MATCH = 0.75f
 
-    /** A detected frame mostly inside a bigger one - this share of it - is part of that one. */
-    private const val FRAME_NESTED = 0.85f
+    /** A frame this much inside a bigger one - a share of its area - lies in it. */
+    private const val FRAME_INSIDE = 0.85f
+
+    /** ... and spanning this share of the bigger one's width (or height), is a strip across it. */
+    private const val FRAME_ACROSS = 0.8f
+
+    /** ... along its edge: within this share of its height (or width) of it. */
+    private const val FRAME_EDGE = 0.05f
 
     /**
      * The page's panels from a detector's [frames] (boxes on [map], most sure first - see
@@ -855,12 +861,35 @@ internal object BubbleDetect {
             val u = area(a) + area(b) - i
             return if (u <= 0f) 0f else i / u
         }
-        val kept = frames.filter { f ->
-            frames.none { g -> g !== f && area(g) > area(f) && overlap(f, g) > FRAME_NESTED * area(f) }
+        // Panels don't overlap: a frame found inside a bigger one, across its whole top or bottom
+        // (or side) - a strip of it - is cut off it. One set in a corner or the middle is an
+        // inset panel, and both stand. (Slanted panels' boxes overlap by their slant: no rule
+        // on overlap alone - it lost real panels.)
+        val kept = frames.map { it.copyOf() }
+        for (big in kept) {
+            for (small in kept) {
+                if (small === big || area(small) >= area(big)) continue
+                if (overlap(small, big) < FRAME_INSIDE * area(small)) continue
+                val bw = big[2] - big[0]
+                val bh = big[3] - big[1]
+                if (small[2] - small[0] >= FRAME_ACROSS * bw) {
+                    if (small[1] - big[1] < FRAME_EDGE * bh) {
+                        big[1] = max(big[1], small[3])
+                    } else if (big[3] - small[3] < FRAME_EDGE * bh) {
+                        big[3] = min(big[3], small[1])
+                    }
+                } else if (small[3] - small[1] >= FRAME_ACROSS * bh) {
+                    if (small[0] - big[0] < FRAME_EDGE * bw) {
+                        big[0] = max(big[0], small[2])
+                    } else if (big[2] - small[2] < FRAME_EDGE * bw) {
+                        big[2] = min(big[2], small[0])
+                    }
+                }
+            }
         }
         val cutBounds = cuts.map { boundsOf(it) }
         val used = HashSet<Int>()
-        val shapes = kept.map { f ->
+        val shapes = kept.filter { it[2] - it[0] > 1f && it[3] - it[1] > 1f }.map { f ->
             val best = cutBounds.indices.filter { it !in used }.maxByOrNull { iou(f, cutBounds[it]) }
             if (best != null && iou(f, cutBounds[best]) >= FRAME_MATCH) {
                 used += best
