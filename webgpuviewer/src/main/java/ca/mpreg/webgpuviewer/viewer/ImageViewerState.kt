@@ -374,6 +374,10 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
 
     /** Debug: the page's bubbles in order, their bounds on screen normalised; the open one's place. */
     var debugRects: List<FloatArray> by mutableStateOf(emptyList())
+
+    /** Which of [debugRects] are panel stops. */
+    var debugStops: Set<Int> by mutableStateOf(emptySet())
+        private set
         private set
     var debugActive: Int by mutableStateOf(-1)
         private set
@@ -444,6 +448,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             return
         }
         debugRects = seq.map { it.bounds }
+        debugStops = seq.indices.filter { seq[it].panelStop }.toSet()
         debugActive = active
         // KMK -->
         val page = getPage(0) as? ImagePage.ImageSingle
@@ -549,12 +554,15 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
                 if (problem == BubbleProblem.PANELS) {
                     // The page's panels as they stand, in order: what is edited.
                     editPanels = debugPanelOrder.map { it.copyOf() }
+                    panelsAtStart = editPanels
                     panelActive = if (editPanels.isEmpty()) -1 else 0
-                    logPanelOrder(page, editPanels)
                 }
             }
         }
     }
+
+    /** Editing panels: the panels as they were when editing began, for the log. */
+    private var panelsAtStart: List<FloatArray> = emptyList()
 
     /** Editing panels: the page's panels in order, polygons on screen; the one picked. */
     var editPanels: List<FloatArray> by mutableStateOf(emptyList())
@@ -655,10 +663,14 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         return floatArrayOf(x0, y0, x1, y1)
     }
 
-    /** The panels' order logged for [page]: as found the first time, then as corrected. */
-    private fun logPanelOrder(page: ImagePage.ImageSingle, panels: List<FloatArray>) {
+    /** The panels' order logged for [page]: as they were when editing began, and as saved. */
+    private fun logPanelOrder(page: ImagePage.ImageSingle, before: List<FloatArray>, after: List<FloatArray>) {
         val label = debugLabel?.takeIf { debugPage === page } ?: return
-        val onImages = panels.mapNotNull { p ->
+        BubbleDebugLog.panelOrder(label, onImages(page, before), onImages(page, after))
+    }
+
+    private fun onImages(page: ImagePage.ImageSingle, panels: List<FloatArray>) =
+        panels.mapNotNull { p ->
             val b = boundsOf(p)
             val (image, ib) = BubbleZoom.onImage(page, width, height, b) ?: return@mapNotNull null
             // The polygon on that image, by the box's mapping.
@@ -668,8 +680,6 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
                 if (i % 2 == 0) ib[0] + (p[i] - b[0]) * sx else ib[1] + (p[i] - b[1]) * sy
             }
         }
-        BubbleDebugLog.panelOrder(label, onImages)
-    }
 
     /**
      * Editing panels saved: the page's stops put in the panels' order - each panel's bubbles
@@ -683,7 +693,9 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         bubbles.forEachIndexed { i, b ->
             home[i] = panels.indexOfFirst { BubbleZoom.inPolygon(it, b.centerX, b.centerY) }
         }
-        // A bubble in no panel goes with the one before it.
+        // A bubble in no panel goes with the one before it - in the order, not framed with its
+        // panel: shown with nothing round it but its own artwork.
+        val homeless = BooleanArray(bubbles.size) { home[it] < 0 }
         for (i in home.indices) if (home[i] < 0) home[i] = if (i > 0) home[i - 1] else 0
         val out = ArrayList<BubbleOverlay>()
         for (k in panels.indices) {
@@ -697,7 +709,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
                 out += stop
             } else {
                 for (i in mine) {
-                    bubbles[i].panel = box.copyOf()
+                    bubbles[i].panel = if (homeless[i]) null else box.copyOf()
                     out += bubbles[i]
                 }
             }
@@ -722,7 +734,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             if (current != null) {
                 sequence = applyPanels(page, current)
                 shapes = editPanels.map { it.copyOf() }
-                logPanelOrder(page, shapes)
+                logPanelOrder(page, panelsAtStart, shapes)
                 logEdit(page, "panels saved")
             }
         }

@@ -88,11 +88,12 @@ object BubbleDebugLog {
         pages[label]?.ocr = blocks
     }
 
-    /** [label]'s panels in order - as found the first time, then as they stand. */
+    /** [label]'s panels in order: as found - the first time they were edited - and as saved. */
     @Synchronized
-    fun panelOrder(label: String, panels: List<Pair<Int, FloatArray>>) {
+    fun panelOrder(label: String, before: List<Pair<Int, FloatArray>>, after: List<Pair<Int, FloatArray>>) {
         val record = pages[label] ?: return
-        if (record.panelsFound == null) record.panelsFound = panels else record.panelsFinal = panels
+        if (record.panelsFound == null) record.panelsFound = before
+        record.panelsFinal = after
         record.updated = System.currentTimeMillis()
     }
 

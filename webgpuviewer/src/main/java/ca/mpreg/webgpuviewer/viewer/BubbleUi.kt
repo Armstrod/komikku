@@ -119,7 +119,20 @@ internal fun BubbleUi(state: ImageViewerState) {
 
         Canvas(Modifier.fillMaxSize()) {
             marks.forEachIndexed { i, b -> if (i != active && !b.panelStop) shape(b.outlineImage, b.bounds, Found) }
-            marks.getOrNull(active)?.let { shape(it.outlineImage, it.bounds, Active) }
+            marks.getOrNull(active)?.let { b ->
+                // A panel stop is the whole panel: its edge outlined, not a shape filled.
+                if (b.panelStop) {
+                    val r = b.bounds
+                    drawRect(
+                        color = Active,
+                        topLeft = Offset(r[0] * size.width, r[1] * size.height),
+                        size = Size((r[2] - r[0]) * size.width, (r[3] - r[1]) * size.height),
+                        style = Stroke(width = 3.dp.toPx()),
+                    )
+                } else {
+                    shape(b.outlineImage, b.bounds, Active)
+                }
+            }
             // Editing panels: each in the order being set, the picked one red.
             val editing = state.editPanels
             if (state.report == BubbleProblem.PANELS) {
@@ -197,7 +210,15 @@ internal fun BubbleUi(state: ImageViewerState) {
                     style = TextStyle(color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold),
                     modifier = Modifier
                         .offset { IntOffset((r[0] * width).roundToInt(), (r[1] * height).roundToInt()) }
-                        .background(if (i == state.debugActive) Active else Found, RoundedCornerShape(3.dp))
+                        .background(
+                            when {
+                                i == state.debugActive -> Active
+                                // A panel stop's number in the panels' green: no bubble there.
+                                i in state.debugStops -> PanelColor
+                                else -> Found
+                            },
+                            RoundedCornerShape(3.dp),
+                        )
                         .padding(horizontal = 5.dp, vertical = 1.dp),
                 )
             }
