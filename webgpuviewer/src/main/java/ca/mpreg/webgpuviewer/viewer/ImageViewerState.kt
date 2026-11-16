@@ -559,6 +559,22 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     var panelActive: Int by mutableStateOf(-1)
         private set
 
+    /** Correcting a page: [report] set - steps stay on the page, through what is edited. */
+    val editing: Boolean get() = report != null
+
+    /**
+     * A step while correcting the page, [direction] 1 on or -1 back: panels picked while
+     * editing panels, bubbles stepped while editing bubbles - never off the page, which would
+     * lose what isn't saved.
+     */
+    suspend fun editStep(direction: Int) = withFrameClock {
+        when (report) {
+            BubbleProblem.PANELS -> panelStep(direction)
+            BubbleProblem.BUBBLES -> if (direction > 0) reportStep() else stepBubble(-1)
+            null -> {}
+        }
+    }
+
     /** Editing bubbles: on to the next stop, or the page's first with none open. */
     suspend fun reportStep() {
         if (bubble == null) guidedNext() else stepBubble(1)

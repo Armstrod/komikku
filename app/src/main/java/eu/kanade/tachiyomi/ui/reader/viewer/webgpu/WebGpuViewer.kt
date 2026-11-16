@@ -2250,6 +2250,10 @@ open class WebGpuViewer(
 
     /** A tap's navigation, by the tap zones; [guided] false turns pages past any bubbles. */
     private fun navigateTap(offset: Offset, guided: Boolean) {
+        // KMK -->
+        // Correcting a page: it stays put until saved or cancelled.
+        if (pager.state.editing) return
+        // KMK <--
         guidedNavigation = guided
         try {
             when (config.navigator.getAction(PointF(offset.x, offset.y))) {
@@ -2270,6 +2274,12 @@ open class WebGpuViewer(
      * bubbles, and on to the next page once they are read.
      */
     private fun guidedStep(direction: Int) {
+        // KMK -->
+        if (pager.state.editing) {
+            scope.launch { pager.state.editStep(direction) }
+            return
+        }
+        // KMK <--
         scope.launch {
             val stepped = if (direction > 0) pager.state.guidedNext() else pager.state.guidedPrev()
             if (!stepped) navigateSpread(direction)
@@ -2357,6 +2367,9 @@ open class WebGpuViewer(
     }
 
     private fun navigateSpread(direction: Int) {
+        // KMK -->
+        if (pager.state.editing) return
+        // KMK <--
         val target = currentPage?.let { nextPage(it, direction) } ?: return
         moveToPage(target)
     }

@@ -655,7 +655,10 @@ internal object BubbleDetect {
         gutter: BooleanArray? = null,
     ): List<Int> {
         if (boxes.isEmpty()) return emptyList()
-        val panels = panels(map, rightToLeft, boxes, gutter)
+        // KMK -->
+        val gutters = gutter ?: gutters(map)
+        val panels = ordered(map, gutters, panels(map, rightToLeft, boxes, gutters), rightToLeft)
+        // KMK <--
         val byPanel = boxes.indices.groupBy { i ->
             val b = boxes[i]
             val cx = (b[0] + b[2]) / 2
@@ -757,7 +760,68 @@ internal object BubbleDetect {
         gutterMap: BooleanArray? = null,
     ): List<FloatArray> {
         val gutter = gutterMap ?: gutters(map)
-        return panels(map, rightToLeft, bubbles, gutter).mapNotNull { shapeOf(map, gutter, it) }
+        val shapes = panels(map, rightToLeft, bubbles, gutter).mapNotNull { shapeOf(map, gutter, it) }
+        return orderPanels(shapes.map { boundsOf(it) }, rightToLeft).map { shapes[it] }
+    }
+
+    /** [pieces] in reading order by their artwork's bounds - see [orderPanels]. */
+    private fun ordered(map: InkMap, gutter: BooleanArray, pieces: List<Piece>, rightToLeft: Boolean): List<Piece> {
+        val bounds = pieces.map { piece ->
+            shapeOf(map, gutter, piece)?.let { boundsOf(it) }
+                ?: floatArrayOf(piece.x0.toFloat(), piece.y0.toFloat(), piece.x1.toFloat(), piece.y1.toFloat())
+        }
+        return orderPanels(bounds, rightToLeft).map { pieces[it] }
+    }
+
+    /** A panel is above another where they share less than this share of the shorter's height. */
+    private const val ROW_OVERLAP = 0.3f
+
+    /**
+     * The order panels with [bounds] (x0, y0, x1, y1) are read in: row by row down the page,
+     * right to left along a row where [rightToLeft]. Next is always a panel with none left
+     * above it - one is above another where it ends before the other starts, give or take
+     * [ROW_OVERLAP], or its middle is higher than the other's top over the same stretch of
+     * the page - and of those, the furthest right (left reading left to right). So a
+     * tall panel down one side is read before the rows beside it, and a panel never comes
+     * before one higher up its own side of the page.
+     */
+    fun orderPanels(bounds: List<FloatArray>, rightToLeft: Boolean): List<Int> {
+        fun above(q: FloatArray, p: FloatArray): Boolean {
+            val shorter = min(q[3] - q[1], p[3] - p[1])
+            if (q[3] - p[1] < ROW_OVERLAP * shorter) return true
+            // A big panel cut off at a slant still sits above one under its slanted edge: its
+            // middle higher than the other's top, over the same stretch of the page.
+            val across = min(q[2], p[2]) - max(q[0], p[0])
+            return (q[1] + q[3]) * 0.5f < p[1] && across > ROW_OVERLAP * min(q[2] - q[0], p[2] - p[0])
+        }
+        val left = bounds.indices.toMutableList()
+        val out = ArrayList<Int>()
+        while (left.isNotEmpty()) {
+            val free = left.filter { p -> left.none { q -> q != p && above(bounds[q], bounds[p]) } }
+                .ifEmpty { listOf(left.minBy { bounds[it][1] }) }
+            val next = if (rightToLeft) {
+                free.maxBy { bounds[it][0] + bounds[it][2] }
+            } else {
+                free.minBy { bounds[it][0] + bounds[it][2] }
+            }
+            out += next
+            left.remove(next)
+        }
+        return out
+    }
+
+    private fun boundsOf(poly: FloatArray): FloatArray {
+        var x0 = Float.MAX_VALUE
+        var y0 = Float.MAX_VALUE
+        var x1 = -Float.MAX_VALUE
+        var y1 = -Float.MAX_VALUE
+        for (i in poly.indices step 2) {
+            x0 = min(x0, poly[i])
+            x1 = max(x1, poly[i])
+            y0 = min(y0, poly[i + 1])
+            y1 = max(y1, poly[i + 1])
+        }
+        return floatArrayOf(x0, y0, x1, y1)
     }
 
     /** [piece] as a polygon: its bounds clipped by its cuts, drawn in to the artwork in it. */

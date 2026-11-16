@@ -20,7 +20,9 @@ for n, z in enumerate(sys.argv[2:]):
         img = os.path.join(dest, p["images"][0])
         rtl = int(p["rightToLeft"])
         box = lambda b: ",".join(str(v) for v in b["bounds"])
-        final = ";".join(box(b) for b in p["final"])
+        # Panel stops (drawn round a panel with no bubbles) aren't lettering.
+        stop = lambda b: b.get("manual") and b.get("panel") == b["bounds"]
+        final = ";".join(box(b) for b in p["final"] if not stop(b))
         found = ";".join(box(b) for b in p["found"])
         pages.append(f"{label}|{img}|{rtl}|{final}|{found}")
         # Panels as corrected: saved in order, else drawn by hand. Panel stops aren't bubbles.
