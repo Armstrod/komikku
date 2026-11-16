@@ -658,10 +658,16 @@ internal object BubbleZoom {
             ?.let { BubbleFile.decode(it, map, rightToLeft) }
         if (kept != null) {
             // KMK -->
-            // Kept before panels had shapes: found now, and the bubbles not in a panel drawn by
-            // hand framed with them.
-            val shapes = kept.shapes.ifEmpty {
-                val found = BubbleDetect.panelShapes(map, rightToLeft, kept.items.map { it.box })
+            // Kept before panels had shapes - or before they were split where bubbles cross the
+            // gutters, with no panels drawn by hand: found now, and the bubbles not in a panel
+            // drawn by hand framed with them.
+            val stale = kept.version < 6 && kept.panels.isEmpty()
+            val shapes = kept.shapes.takeUnless { stale }.orEmpty().ifEmpty {
+                val found = BubbleDetect.panelShapes(
+                    map,
+                    rightToLeft,
+                    kept.items.filter { !it.panelStop }.map { it.box },
+                )
                 for (item in kept.items) {
                     if (item.panelStop) continue
                     val cx = (item.box[0] + item.box[2]) * 0.5f
@@ -675,10 +681,10 @@ internal object BubbleZoom {
                 }
                 found
             }
-            // Kept before panels with no bubbles were stops, with no panels set by hand: put in
-            // panel order, with those stops.
-            val items = if (kept.version < 5 && kept.panels.isEmpty() && kept.items.none { it.panelStop }) {
-                byPanel(map, kept.items, shapes).also { list ->
+            // Those put in panel order again, each panel with no bubbles a stop - the bubbles'
+            // own order kept within a panel.
+            val items = if (stale) {
+                byPanel(map, kept.items.filter { !it.panelStop }, shapes).also { list ->
                     if (key != null) {
                         val data = BubbleFile.encode(map, rightToLeft, list, kept.panels, shapes)
                         runCatching { store?.write(key, data) }

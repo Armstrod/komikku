@@ -745,6 +745,26 @@ internal object BubbleDetect {
     }
 
     // KMK -->
+    /** A panel split where bubbles cross its gutters: into pieces this big, each way and by area. */
+    private const val SPLIT_MIN_SIDE = 0.12f
+    private const val SPLIT_MIN_AREA = 0.03f
+
+    /** Whether ([x], [y]) lies in [poly] (x, y pairs). */
+    private fun insidePolygon(poly: FloatArray, x: Float, y: Float): Boolean {
+        var inside = false
+        val n = poly.size / 2
+        var j = n - 1
+        for (i in 0 until n) {
+            val xi = poly[2 * i]
+            val yi = poly[2 * i + 1]
+            val xj = poly[2 * j]
+            val yj = poly[2 * j + 1]
+            if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside
+            j = i
+        }
+        return inside
+    }
+
     /** A panel holding less artwork than this share of the page is gutter, not a panel. */
     private const val MIN_PANEL_INK = 0.01f
 
@@ -762,7 +782,46 @@ internal object BubbleDetect {
         val gutter = gutterMap ?: gutters(map)
         // Cut along the gutters alone: cutting round the bubbles too, as reading order does,
         // splits panels along their bubbles' edges.
-        val shapes = panels(map, rightToLeft, emptyList(), gutter).mapNotNull { shapeOf(map, gutter, it) }
+        val plain = panels(map, rightToLeft, emptyList(), gutter).mapNotNull { shapeOf(map, gutter, it) }
+        // But a bubble breaking out across a gutter blocks the cut there, joining panels. Cut
+        // round the bubbles too, a panel is taken as the panel-sized pieces it falls into, each
+        // sliver along a bubble's edge put back into the piece beside it.
+        val shapes = if (bubbles.isEmpty()) {
+            plain
+        } else {
+            val round = panels(map, rightToLeft, bubbles, gutter).mapNotNull { shapeOf(map, gutter, it) }
+            fun sized(b: FloatArray): Boolean {
+                val w = b[2] - b[0]
+                val h = b[3] - b[1]
+                return w >= SPLIT_MIN_SIDE * map.width && h >= SPLIT_MIN_SIDE * map.height &&
+                    w * h >= SPLIT_MIN_AREA * map.width * map.height
+            }
+            plain.flatMap { whole ->
+                val parts = round.filter { part ->
+                    val b = boundsOf(part)
+                    insidePolygon(whole, (b[0] + b[2]) * 0.5f, (b[1] + b[3]) * 0.5f)
+                }
+                val big = parts.filter { sized(boundsOf(it)) }
+                if (big.size < 2) return@flatMap listOf(whole)
+                // Each sliver joins the big piece nearest its middle: the two as one box.
+                val merged = big.map { it.copyOf() }.toMutableList()
+                for (sliver in parts.filter { p -> big.none { it === p } }) {
+                    val sb = boundsOf(sliver)
+                    val mx = (sb[0] + sb[2]) * 0.5f
+                    val my = (sb[1] + sb[3]) * 0.5f
+                    val k = merged.indices.minBy { i ->
+                        val b = boundsOf(merged[i])
+                        val dx = max(0f, max(b[0] - mx, mx - b[2]))
+                        val dy = max(0f, max(b[1] - my, my - b[3]))
+                        dx * dx + dy * dy
+                    }
+                    val b = boundsOf(merged[k])
+                    val u = floatArrayOf(min(b[0], sb[0]), min(b[1], sb[1]), max(b[2], sb[2]), max(b[3], sb[3]))
+                    merged[k] = floatArrayOf(u[0], u[1], u[2], u[1], u[2], u[3], u[0], u[3])
+                }
+                merged
+            }
+        }
         return orderPanels(shapes.map { boundsOf(it) }, rightToLeft).map { shapes[it] }
     }
 
