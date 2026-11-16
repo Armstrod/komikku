@@ -19,11 +19,29 @@ class GetApplicationRelease(
     suspend fun await(arguments: Arguments): Result {
         val now = Instant.now()
 
+        // KMK -->
+        // Dev builds (versionName "1.14.1-<commits>-<sha>") follow the fork's "dev-*"
+        // prereleases, checked hourly: each push to dev publishes one.
+        val devBuild = "-" in arguments.versionName
+        // KMK <--
         // Limit checks to once every 3 days at most
-        val nextCheckTime = Instant.ofEpochMilli(lastChecked.get()).plus(2, ChronoUnit.DAYS)
+        val nextCheckTime = Instant.ofEpochMilli(lastChecked.get())
+            // KMK -->
+            .plus(if (devBuild) 1 else 48, ChronoUnit.HOURS)
+        // KMK <--
         if (!arguments.forceCheck && now.isBefore(nextCheckTime)) {
             return Result.NoNewUpdate
         }
+
+        // KMK -->
+        if (devBuild) {
+            val latestDev = service.releaseNotes(arguments)
+                .filter { !it.draft && (devCommitCount(it.version) ?: 0) > arguments.commitCount }
+                .getLatest()
+            lastChecked.set(now.toEpochMilli())
+            return latestDev?.let { Result.NewUpdate(it) } ?: Result.NoNewUpdate
+        }
+        // KMK <--
 
         // KMK -->
         val releases = service.releaseNotes(arguments)
@@ -56,6 +74,10 @@ class GetApplicationRelease(
     }
 
     // KMK -->
+    /** The commit count in a dev release tag, "dev-1.14.1-10722-c808ecea7" → 10722. */
+    private fun devCommitCount(tag: String): Int? =
+        tag.takeIf { it.startsWith("dev-") }?.split("-")?.getOrNull(2)?.toIntOrNull()
+
     suspend fun awaitReleaseNotes(arguments: Arguments): Result {
         // Our fork ships dev builds as prereleases; show their notes on dev builds,
         // stable release notes otherwise.

@@ -100,7 +100,7 @@ fun getGithubRepo(peekIntoPreview: Boolean = false): String =
         "komikku-app/komikku-preview"
     } else {
         // KMK -->
-        "rezhajulio/komikku"
+        "Armstrod/komikku"
         // KMK <--
     }
 

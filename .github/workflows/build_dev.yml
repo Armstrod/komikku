@@ -47,7 +47,7 @@ jobs:
           fi
 
       - name: Build dev APK
-        run: ./gradlew assembleDebug -Pdisable-code-shrink
+        run: ./gradlew assembleDebug -Pdisable-code-shrink -Penable-updater
 
       - name: Rename APKs
         run: |
