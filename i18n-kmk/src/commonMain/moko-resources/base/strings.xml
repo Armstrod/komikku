@@ -270,7 +270,7 @@
     <string name="pref_bubble_hide_upcoming">Dim upcoming bubbles</string>
     <string name="pref_bubble_hide_upcoming_summary">In the view below the page, bubbles not read yet are faded until you step to them, so the eye isn\'t drawn ahead</string>
     <string name="pref_bubble_dim_strength">Dimming strength</string>
-    <string name="pref_bubble_dim_strength_summary">How faint upcoming bubbles are. 100% covers them completely</string>
+    <string name="pref_bubble_dim_strength_summary">%s. How faint upcoming bubbles are - the strongest covers them completely</string>
     <string name="pref_bubble_follow_panel">Keep the view to the panel</string>
     <string name="pref_bubble_follow_panel_summary">Show the whole panel when it fits with readable text, so stepping between its bubbles keeps the view still. When it\'s too big, the view stays inside the panel and moves only as far as the next bubble needs, rather than jumping to centre each one</string>
     <string name="pref_bubble_debug">Bubble debug mode</string>
