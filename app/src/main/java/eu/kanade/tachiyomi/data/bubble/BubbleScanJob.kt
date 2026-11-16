@@ -11,6 +11,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import ca.mpreg.webgpuviewer.viewer.BubbleScan
+import ca.mpreg.webgpuviewer.viewer.PanelModel
 import eu.kanade.domain.chapter.model.toDbChapter
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.data.download.DownloadProvider
@@ -38,6 +39,9 @@ import kotlin.math.max
 class BubbleScanJob(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
+        // KMK -->
+        PanelModel.init(applicationContext)
+        // KMK <--
         val prefs = Injekt.get<ReaderPreferences>()
         if (!wanted(prefs)) return Result.success()
         val mangaId = inputData.getLong(KEY_MANGA, -1L)

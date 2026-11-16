@@ -825,6 +825,53 @@ internal object BubbleDetect {
         return orderPanels(shapes.map { boundsOf(it) }, rightToLeft).map { shapes[it] }
     }
 
+    /** A detected frame takes a cut shape's slanted edges where their bounds overlap this much. */
+    private const val FRAME_MATCH = 0.75f
+
+    /** A detected frame mostly inside a bigger one - this share of it - is part of that one. */
+    private const val FRAME_NESTED = 0.85f
+
+    /**
+     * The page's panels from a detector's [frames] (boxes on [map], most sure first - see
+     * PanelModel), in reading order: each frame as the cut shape matching it - see
+     * [panelShapes] - where one does, for its slanted edges, else as its box. The detector
+     * decides where panels are: it finds borderless panels, bleeds and panels joined by a
+     * bubble across their gutter that the cuts can't. No frames: the cut shapes.
+     */
+    fun panelShapesFrom(
+        map: InkMap,
+        rightToLeft: Boolean,
+        bubbles: List<IntArray>,
+        frames: List<FloatArray>,
+        gutterMap: BooleanArray? = null,
+    ): List<FloatArray> {
+        val cuts = panelShapes(map, rightToLeft, bubbles, gutterMap)
+        if (frames.isEmpty()) return cuts
+        fun area(b: FloatArray) = max(0f, b[2] - b[0]) * max(0f, b[3] - b[1])
+        fun overlap(a: FloatArray, b: FloatArray) =
+            max(0f, min(a[2], b[2]) - max(a[0], b[0])) * max(0f, min(a[3], b[3]) - max(a[1], b[1]))
+        fun iou(a: FloatArray, b: FloatArray): Float {
+            val i = overlap(a, b)
+            val u = area(a) + area(b) - i
+            return if (u <= 0f) 0f else i / u
+        }
+        val kept = frames.filter { f ->
+            frames.none { g -> g !== f && area(g) > area(f) && overlap(f, g) > FRAME_NESTED * area(f) }
+        }
+        val cutBounds = cuts.map { boundsOf(it) }
+        val used = HashSet<Int>()
+        val shapes = kept.map { f ->
+            val best = cutBounds.indices.filter { it !in used }.maxByOrNull { iou(f, cutBounds[it]) }
+            if (best != null && iou(f, cutBounds[best]) >= FRAME_MATCH) {
+                used += best
+                cuts[best]
+            } else {
+                floatArrayOf(f[0], f[1], f[2], f[1], f[2], f[3], f[0], f[3])
+            }
+        }
+        return orderPanels(shapes.map { boundsOf(it) }, rightToLeft).map { shapes[it] }
+    }
+
     /** [pieces] in reading order by their artwork's bounds - see [orderPanels]. */
     private fun ordered(map: InkMap, gutter: BooleanArray, pieces: List<Piece>, rightToLeft: Boolean): List<Piece> {
         val bounds = pieces.map { piece ->

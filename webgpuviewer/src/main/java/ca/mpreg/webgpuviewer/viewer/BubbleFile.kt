@@ -28,7 +28,7 @@ interface BubbleStore {
  */
 internal object BubbleFile {
     private const val MAGIC = 0x42554231 // "BUB1"
-    private const val VERSION = 6
+    private const val VERSION = 7
 
     /** What a file holds: the bubbles, and the panels drawn by hand on the image (map pixels). */
     class Kept(
@@ -37,7 +37,7 @@ internal object BubbleFile {
         val shapes: List<FloatArray>,
         /**
          * The file's version: before 5, panels with no bubbles weren't stops; before 6, panels
-         * weren't split where bubbles cross the gutters.
+         * weren't split where bubbles cross the gutters; before 7, no panel detector.
          */
         val version: Int = VERSION,
     )

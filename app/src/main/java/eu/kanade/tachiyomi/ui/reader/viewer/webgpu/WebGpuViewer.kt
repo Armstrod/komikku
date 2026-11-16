@@ -41,6 +41,7 @@ import ca.mpreg.webgpuviewer.transition.TransitionStackRight
 import ca.mpreg.webgpuviewer.transition.TransitionStackUp
 import ca.mpreg.webgpuviewer.viewer.BubbleDebugLog
 import ca.mpreg.webgpuviewer.viewer.BubbleProblem
+import ca.mpreg.webgpuviewer.viewer.PanelModel
 import ca.mpreg.webgpuviewer.viewer.BubbleScan
 import ca.mpreg.webgpuviewer.viewer.ImagePage
 import ca.mpreg.webgpuviewer.viewer.ImageViewerContinuousState
@@ -1122,6 +1123,7 @@ open class WebGpuViewer(
         pager.state.onDebugExport = ::exportBubbleDebug
         // KMK -->
         pager.state.onReport = ::sendBubbleReport
+        PanelModel.init(activity)
         // Reports left waiting - written offline, or before a token was set - go now.
         if (BubbleReportJob.queueDir(activity).list()?.isNotEmpty() == true) BubbleReportJob.enqueue(activity)
         // KMK <--

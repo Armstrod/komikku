@@ -40,6 +40,8 @@ dependencies {
     // On-device text recognition, bundled (no Play Services download): confirms a bubble found
     // for the sequence has lettering in it - see TextCheck.
     implementation("com.google.mlkit:text-recognition:16.0.1")
+    // KMK: the panel detector (assets/panel-yolo26n.onnx) - see PanelModel.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.27.0")
 }
 
 /** Unpacks the release's prebuilt libresize.so, one per ABI, as a jniLibs directory. */

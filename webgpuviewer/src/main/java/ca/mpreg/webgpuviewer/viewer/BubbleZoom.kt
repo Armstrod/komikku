@@ -506,6 +506,21 @@ internal object BubbleZoom {
         }
     }
 
+    /** The page's panels: the detector's where it runs (see [PanelModel]), else the gutter cuts'. */
+    private fun shapesOf(
+        map: InkMap,
+        rightToLeft: Boolean,
+        bubbles: List<IntArray>,
+        gutters: BooleanArray? = null,
+    ): List<FloatArray> {
+        val frames = PanelModel.frames(map)
+        return if (frames != null) {
+            BubbleDetect.panelShapesFrom(map, rightToLeft, bubbles, frames, gutters)
+        } else {
+            BubbleDetect.panelShapes(map, rightToLeft, bubbles, gutters)
+        }
+    }
+
     /** A panel with no bubbles is a stop of its own only this big: a share of the page, each way. */
     private const val STOP_MIN_SIDE = 0.12f
     private const val STOP_MIN_AREA = 0.04f
@@ -658,16 +673,12 @@ internal object BubbleZoom {
             ?.let { BubbleFile.decode(it, map, rightToLeft) }
         if (kept != null) {
             // KMK -->
-            // Kept before panels had shapes - or before they were split where bubbles cross the
-            // gutters, with no panels drawn by hand: found now, and the bubbles not in a panel
-            // drawn by hand framed with them.
-            val stale = kept.version < 6 && kept.panels.isEmpty()
+            // Kept before panels had shapes - or before the panel detector found them, with no
+            // panels drawn by hand: found now, and the bubbles not in a panel drawn by hand
+            // framed with them.
+            val stale = kept.version < 7 && kept.panels.isEmpty()
             val shapes = kept.shapes.takeUnless { stale }.orEmpty().ifEmpty {
-                val found = BubbleDetect.panelShapes(
-                    map,
-                    rightToLeft,
-                    kept.items.filter { !it.panelStop }.map { it.box },
-                )
+                val found = shapesOf(map, rightToLeft, kept.items.filter { !it.panelStop }.map { it.box })
                 for (item in kept.items) {
                     if (item.panelStop) continue
                     val cx = (item.box[0] + item.box[2]) * 0.5f
@@ -739,7 +750,7 @@ internal object BubbleZoom {
         // Each bubble framed with the panel shape it sits in - the page cut along its gutters,
         // edges on the borders, no two overlapping - or, outside them all, what its middle
         // reaches without crossing a gutter.
-        val shapes = BubbleDetect.panelShapes(map, rightToLeft, items.map { it.box }, gutters)
+        val shapes = shapesOf(map, rightToLeft, items.map { it.box }, gutters)
         val around = BubbleDetect.panelsAround(map, gutters, items.map { it.box })
         items.forEachIndexed { i, item ->
             val cx = (item.box[0] + item.box[2]) * 0.5f
