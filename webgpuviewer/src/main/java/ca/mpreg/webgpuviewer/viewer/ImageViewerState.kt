@@ -465,16 +465,18 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         val shapes = page?.takeIf { width > 0 && height > 0 }?.let { BubbleZoom.panelShapesOf(it, width, height) }
             .orEmpty()
             .ifEmpty { seq.mapNotNull { it.panel }.distinctBy { it.toList() }.map { rect(it) } }
+        // A drawn panel is in the shapes once the panels are saved; until then it replaces the
+        // found ones whose middle it holds.
+        fun same(a: FloatArray, b: FloatArray) = a.size == b.size && a.indices.all { abs(a[it] - b[it]) < 0.003f }
         val found = shapes.filter { s ->
             val (mx, my) = middle(s)
-            hand.none { h -> mx in h[0]..h[2] && my in h[1]..h[3] }
+            hand.none { h -> mx in h[0]..h[2] && my in h[1]..h[3] && !same(s, rect(h)) }
         }
         debugPanels = found
-        // Numbered in the order the stops reach them; panels no stop is in, after.
-        val all = found + hand.map { rect(it) }
-        fun firstStop(p: FloatArray): Int = seq.indexOfFirst { BubbleZoom.inPolygon(p, it.centerX, it.centerY) }
-            .let { if (it < 0) Int.MAX_VALUE else it }
-        debugPanelOrder = all.withIndex().sortedWith(compareBy({ firstStop(it.value) }, { it.index })).map { it.value }
+        // Numbered in their order - as found, reading order; as edited, the reader's - with
+        // panels drawn by hand and not yet in it after.
+        val listed = hand.map { rect(it) }.filter { h -> found.none { same(it, h) } }
+        debugPanelOrder = found + listed
         // KMK <--
     }
 
@@ -532,23 +534,157 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             debugTemporary = true
         }
         report = problem
-        drawingPanel = problem == BubbleProblem.PANEL
-        if (problem == BubbleProblem.MISSED && press != null) {
-            debugDraft = floatArrayOf(
-                (press.x - 0.12f).coerceAtLeast(0f),
-                (press.y - 0.06f).coerceAtLeast(0f),
-                (press.x + 0.12f).coerceAtMost(1f),
-                (press.y + 0.06f).coerceAtMost(1f),
-            )
-            debugAdding = true
-        }
+        drawingPanel = false
+        editPanels = emptyList()
+        panelActive = -1
         scope?.launch {
             withFrameClock {
                 val seq = bubble?.takeIf { it.page === page }?.let { sequenceFor(page, it) } ?: sequenceOf(page)
-                if (getPage(0) === page) startDebugLog(page, seq)
+                if (getPage(0) !== page) return@withFrameClock
+                startDebugLog(page, seq)
                 publishDebug()
+                if (problem == BubbleProblem.PANELS) {
+                    // The page's panels as they stand, in order: what is edited.
+                    editPanels = debugPanelOrder.map { it.copyOf() }
+                    panelActive = if (editPanels.isEmpty()) -1 else 0
+                    logPanelOrder(page, editPanels)
+                }
             }
         }
+    }
+
+    /** Editing panels: the page's panels in order, polygons on screen; the one picked. */
+    var editPanels: List<FloatArray> by mutableStateOf(emptyList())
+        private set
+    var panelActive: Int by mutableStateOf(-1)
+        private set
+
+    /** Editing bubbles: on to the next stop, or the page's first with none open. */
+    suspend fun reportStep() {
+        if (bubble == null) guidedNext() else stepBubble(1)
+    }
+
+    /** Editing panels: picks the panel [delta] on in the order. */
+    fun panelStep(delta: Int) {
+        if (editPanels.isEmpty()) return
+        panelActive = (panelActive + delta).coerceIn(0, editPanels.lastIndex)
+    }
+
+    /** Editing panels: moves the picked panel [delta] places in the order. */
+    fun panelMove(delta: Int) {
+        val at = panelActive
+        val to = at + delta
+        if (at !in editPanels.indices || to !in editPanels.indices) return
+        editPanels = editPanels.toMutableList().apply { add(to, removeAt(at)) }
+        panelActive = to
+    }
+
+    /** Editing panels: the picked panel isn't one. */
+    fun panelDelete() {
+        val at = panelActive
+        if (at !in editPanels.indices) return
+        editPanels = editPanels.toMutableList().apply { removeAt(at) }
+        panelActive = at.coerceAtMost(editPanels.lastIndex)
+    }
+
+    /** Editing panels: [rect] (normalised) is a panel, after the picked one; panels it holds go. */
+    private fun panelAdd(rect: FloatArray) {
+        val box = floatArrayOf(rect[0], rect[1], rect[2], rect[1], rect[2], rect[3], rect[0], rect[3])
+        val list = editPanels.toMutableList()
+        var at = panelActive + 1
+        // One drawn round a panel found replaces it, rather than lying over it.
+        for (i in list.indices.reversed()) {
+            val (mx, my) = middleOf(list[i])
+            if (mx in rect[0]..rect[2] && my in rect[1]..rect[3]) {
+                list.removeAt(i)
+                if (i < at) at--
+            }
+        }
+        at = at.coerceIn(0, list.size)
+        list.add(at, box)
+        editPanels = list
+        panelActive = at
+        val page = getPage(0) as? ImagePage.ImageSingle ?: return
+        if (handPanelsPage !== page) {
+            handPanels = ArrayList(BubbleZoom.panelsOf(page, width, height))
+            handPanelsPage = page
+        }
+        handPanels += rect.copyOf()
+    }
+
+    private fun middleOf(p: FloatArray): Pair<Float, Float> {
+        var x = 0f
+        var y = 0f
+        for (i in p.indices step 2) {
+            x += p[i]
+            y += p[i + 1]
+        }
+        return x * 2 / p.size to y * 2 / p.size
+    }
+
+    private fun boundsOf(p: FloatArray): FloatArray {
+        var x0 = 1f
+        var y0 = 1f
+        var x1 = 0f
+        var y1 = 0f
+        for (i in p.indices step 2) {
+            x0 = min(x0, p[i])
+            x1 = max(x1, p[i])
+            y0 = min(y0, p[i + 1])
+            y1 = max(y1, p[i + 1])
+        }
+        return floatArrayOf(x0, y0, x1, y1)
+    }
+
+    /** The panels' order logged for [page]: as found the first time, then as corrected. */
+    private fun logPanelOrder(page: ImagePage.ImageSingle, panels: List<FloatArray>) {
+        val label = debugLabel?.takeIf { debugPage === page } ?: return
+        val onImages = panels.mapNotNull { p ->
+            val b = boundsOf(p)
+            val (image, ib) = BubbleZoom.onImage(page, width, height, b) ?: return@mapNotNull null
+            // The polygon on that image, by the box's mapping.
+            val sx = (ib[2] - ib[0]) / (b[2] - b[0]).coerceAtLeast(1e-6f)
+            val sy = (ib[3] - ib[1]) / (b[3] - b[1]).coerceAtLeast(1e-6f)
+            image to FloatArray(p.size) { i ->
+                if (i % 2 == 0) ib[0] + (p[i] - b[0]) * sx else ib[1] + (p[i] - b[1]) * sy
+            }
+        }
+        BubbleDebugLog.panelOrder(label, onImages)
+    }
+
+    /**
+     * Editing panels saved: the page's stops put in the panels' order - each panel's bubbles
+     * in their order, a panel with none a stop of its own - and each bubble framed with its
+     * panel. Bubbles in no panel stay after the one before them.
+     */
+    private fun applyPanels(page: ImagePage.ImageSingle, seq: List<BubbleOverlay>): List<BubbleOverlay> {
+        val panels = editPanels
+        val bubbles = seq.filter { !it.panelStop }
+        val home = IntArray(bubbles.size) { -1 }
+        bubbles.forEachIndexed { i, b ->
+            home[i] = panels.indexOfFirst { BubbleZoom.inPolygon(it, b.centerX, b.centerY) }
+        }
+        // A bubble in no panel goes with the one before it.
+        for (i in home.indices) if (home[i] < 0) home[i] = if (i > 0) home[i - 1] else 0
+        val out = ArrayList<BubbleOverlay>()
+        for (k in panels.indices) {
+            val box = boundsOf(panels[k])
+            val mine = bubbles.indices.filter { home[it] == k }
+            if (mine.isEmpty()) {
+                val stop = BubbleZoom.manual(page, width, height, box, dockRegion(page), bubbleContext) ?: continue
+                stop.panelStop = true
+                stop.panel = box
+                out += stop
+            } else {
+                for (i in mine) {
+                    bubbles[i].panel = box.copyOf()
+                    out += bubbles[i]
+                }
+            }
+        }
+        // Panels all deleted: the bubbles as they were.
+        if (panels.isEmpty()) out += bubbles
+        return out
     }
 
     /**
@@ -560,6 +696,16 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         val problem = report ?: return
         val page = debugPage as? ImagePage.ImageSingle
         val label = debugLabel
+        var shapes: List<FloatArray>? = null
+        if (problem == BubbleProblem.PANELS && page != null) {
+            val current = sequence?.takeIf { sequencePage === page }
+            if (current != null) {
+                sequence = applyPanels(page, current)
+                shapes = editPanels.map { it.copyOf() }
+                logPanelOrder(page, shapes)
+                logEdit(page, "panels saved")
+            }
+        }
         val seq = sequence?.takeIf { sequencePage === page }
         if (page != null && seq != null && width > 0 && height > 0) {
             val w = width
@@ -567,8 +713,9 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             val rtl = isReversed
             val list = seq.toList()
             val hand = handPanels.takeIf { handPanelsPage === page }.orEmpty().toList()
+            val kept = shapes
             scope?.launch(Dispatchers.Default) {
-                runCatching { BubbleZoom.keep(page, w, h, rtl, list, hand) }
+                runCatching { BubbleZoom.keep(page, w, h, rtl, list, hand, kept) }
                     .onFailure { Log.w("ImageViewerState", "Keeping corrections failed", it) }
             }
         }
@@ -632,6 +779,8 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
 
     private fun endReport() {
         report = null
+        editPanels = emptyList()
+        panelActive = -1
         drawingPanel = false
         debugAdding = false
         debugDraft = null
@@ -648,6 +797,10 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
      */
     fun debugPanel(rect: FloatArray) {
         drawingPanel = false
+        if (report == BubbleProblem.PANELS) {
+            panelAdd(rect)
+            return
+        }
         val page = getPage(0) as? ImagePage.ImageSingle ?: return
         fun inside(b: BubbleOverlay) =
             !b.panelStop && b.centerX in rect[0]..rect[2] && b.centerY in rect[1]..rect[3]

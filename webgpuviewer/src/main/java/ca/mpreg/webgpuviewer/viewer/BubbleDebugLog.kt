@@ -48,6 +48,10 @@ object BubbleDebugLog {
 
         /** Panels drawn by hand: image, bounds on it. */
         val panels = ArrayList<Pair<Int, FloatArray>>()
+
+        /** The page's panels as found and as corrected, in order: image, polygon on it. */
+        var panelsFound: List<Pair<Int, FloatArray>>? = null
+        var panelsFinal: List<Pair<Int, FloatArray>>? = null
     }
 
     private val pages = LinkedHashMap<String, PageRecord>()
@@ -82,6 +86,14 @@ object BubbleDebugLog {
     @Synchronized
     fun ocr(label: String, blocks: List<Ocr>) {
         pages[label]?.ocr = blocks
+    }
+
+    /** [label]'s panels in order - as found the first time, then as they stand. */
+    @Synchronized
+    fun panelOrder(label: String, panels: List<Pair<Int, FloatArray>>) {
+        val record = pages[label] ?: return
+        if (record.panelsFound == null) record.panelsFound = panels else record.panelsFinal = panels
+        record.updated = System.currentTimeMillis()
     }
 
     /** A note in [label]'s edits - a fix finished, say. */
@@ -175,6 +187,19 @@ object BubbleDebugLog {
                                 }
                             },
                         )
+                        fun shapes(list: List<Pair<Int, FloatArray>>?) = JSONArray().apply {
+                            list?.forEachIndexed { n, (image, poly) ->
+                                put(
+                                    JSONObject().apply {
+                                        put("order", n + 1)
+                                        put("image", image)
+                                        put("points", rounded(poly))
+                                    },
+                                )
+                            }
+                        }
+                        put("panelsFound", shapes(record.panelsFound))
+                        record.panelsFinal?.let { put("panelsFinal", shapes(it)) }
                         put("corrected", record.edits.isNotEmpty())
                     },
                 )

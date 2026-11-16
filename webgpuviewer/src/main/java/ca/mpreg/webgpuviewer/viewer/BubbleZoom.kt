@@ -434,6 +434,8 @@ internal object BubbleZoom {
         list: List<BubbleOverlay>,
         /** Panels drawn by hand, on screen normalised. */
         panels: List<FloatArray> = emptyList(),
+        /** The page's panels as corrected, polygons on screen in order; null keeps them as they are. */
+        shapes: List<FloatArray>? = null,
     ) {
         page.forEachImage { image, offsetX, imageScale ->
             val map = image.inkMap ?: return@forEachImage
@@ -474,10 +476,21 @@ internal object BubbleZoom {
             val drawn = panels
                 .filter { p -> (p[0] + p[2]) * 0.5f in r[0]..r[2] && (p[1] + p[3]) * 0.5f in r[1]..r[3] }
                 .map { toMap(it) }
-            val shapes = synchronized(cache) { cache[map]?.shapes }.orEmpty()
-            synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, items, drawn, shapes) }
+            val kept = shapes?.filter { s ->
+                var mx = 0f
+                var my = 0f
+                for (i in s.indices step 2) {
+                    mx += s[i]
+                    my += s[i + 1]
+                }
+                mx = mx * 2 / s.size
+                my = my * 2 / s.size
+                mx >= r[0] && mx < r[2] && my >= r[1] && my < r[3]
+            }?.map { s -> FloatArray(s.size) { i -> if (i % 2 == 0) (s[i] - r[0]) * sx else (s[i] - r[1]) * sy } }
+                ?: synchronized(cache) { cache[map]?.shapes }.orEmpty()
+            synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, items, drawn, kept) }
             val key = keyOf?.invoke(image) ?: return@forEachImage
-            runCatching { store?.write(key, BubbleFile.encode(map, rightToLeft, items, drawn, shapes)) }
+            runCatching { store?.write(key, BubbleFile.encode(map, rightToLeft, items, drawn, kept)) }
                 .onFailure { Log.w("BubbleZoom", "Couldn't keep corrected bubbles", it) }
         }
     }

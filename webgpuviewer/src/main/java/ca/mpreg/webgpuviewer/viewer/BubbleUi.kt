@@ -120,8 +120,21 @@ internal fun BubbleUi(state: ImageViewerState) {
         Canvas(Modifier.fillMaxSize()) {
             marks.forEachIndexed { i, b -> if (i != active && !b.panelStop) shape(b.outlineImage, b.bounds, Found) }
             marks.getOrNull(active)?.let { shape(it.outlineImage, it.bounds, Active) }
-            // Debug: panels in orange - dashed as found round the bubbles, solid where drawn by hand.
-            if (debug || state.showOutlines) {
+            // Editing panels: each in the order being set, the picked one red.
+            val editing = state.editPanels
+            if (state.report == BubbleProblem.PANELS) {
+                editing.forEachIndexed { i, p ->
+                    if (i != state.panelActive) panelShape(p, Stroke(width = 2.dp.toPx()))
+                }
+                editing.getOrNull(state.panelActive)?.let { p ->
+                    val path = Path().apply {
+                        moveTo(p[0] * size.width, p[1] * size.height)
+                        for (k in 2 until p.size step 2) lineTo(p[k] * size.width, p[k + 1] * size.height)
+                        close()
+                    }
+                    drawPath(path, Active, style = Stroke(width = 4.dp.toPx()))
+                }
+            } else if (debug || state.showOutlines) {
                 val dashed = PathEffect.dashPathEffect(floatArrayOf(10.dp.toPx(), 6.dp.toPx()))
                 for (p in state.debugPanels) panelShape(p, Stroke(width = 2.dp.toPx(), pathEffect = dashed))
                 for (p in state.debugHandPanels) panelBox(p, Stroke(width = 3.dp.toPx()))
@@ -159,7 +172,8 @@ internal fun BubbleUi(state: ImageViewerState) {
 
         if (debug || state.showOutlines) {
             // Panels numbered at their top right, in green, out of the way of the bubbles' numbers.
-            state.debugPanelOrder.forEachIndexed { i, p ->
+            val numbered = if (state.report == BubbleProblem.PANELS) state.editPanels else state.debugPanelOrder
+            numbered.forEachIndexed { i, p ->
                 val density = LocalDensity.current
                 val chip = with(density) { 30.dp.toPx() }
                 // At the top right of its bounds, inside.
@@ -170,7 +184,10 @@ internal fun BubbleUi(state: ImageViewerState) {
                     style = TextStyle(color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold),
                     modifier = Modifier
                         .offset { IntOffset((right * width - chip).roundToInt(), (top * height).roundToInt()) }
-                        .background(PanelColor, RoundedCornerShape(3.dp))
+                        .background(
+                            if (state.report == BubbleProblem.PANELS && i == state.panelActive) Active else PanelColor,
+                            RoundedCornerShape(3.dp),
+                        )
                         .padding(horizontal = 4.dp, vertical = 1.dp),
                 )
             }
@@ -265,6 +282,13 @@ internal fun BubbleUi(state: ImageViewerState) {
                         DebugAction.PANEL -> {
                             state.drawingPanel = !state.drawingPanel
                         }
+                        DebugAction.PANEL_PREV -> state.panelStep(-1)
+                        DebugAction.PANEL_NEXT -> state.panelStep(1)
+                        DebugAction.PANEL_EARLIER -> state.panelMove(-1)
+                        DebugAction.PANEL_LATER -> state.panelMove(1)
+                        DebugAction.PANEL_DELETE -> state.panelDelete()
+                        DebugAction.BUBBLE_PREV -> state.stepBubble(-1)
+                        DebugAction.BUBBLE_NEXT -> state.reportStep()
                         DebugAction.DONE -> state.finishReport()
                         DebugAction.CANCEL -> state.cancelReport()
                     }
@@ -278,7 +302,7 @@ internal fun BubbleUi(state: ImageViewerState) {
                 height,
                 initial = null,
                 prompt = "Drag a box round the whole panel",
-                confirm = "Set panel",
+                confirm = "Add panel",
                 onBox = { rect -> state.debugPanel(rect) },
                 onCancel = { state.drawingPanel = false },
             )
@@ -401,7 +425,7 @@ private fun MissPrompt(modifier: Modifier, onMark: () -> Unit, onCancel: () -> U
 // KMK -->
 /**
  * A long press while stepping through bubbles: look for missed text there, as before, or
- * report a problem with the page - see [ImageViewerState.startReport].
+ * correct the page's bubbles or panels - see [ImageViewerState.startReport].
  */
 @Composable
 private fun PressMenu(
@@ -419,13 +443,10 @@ private fun PressMenu(
     ) {
         ToolChip("Find missed text here", enabled = true, onClick = onFind)
         BasicText(
-            "Fix a problem on this page",
+            "Correct this page",
             style = TextStyle(color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold),
         )
-        BubbleProblem.entries.groupBy { it.group }.forEach { (group, problems) ->
-            BasicText(group, style = TextStyle(color = Color(0xFFBDBDBD), fontSize = 12.sp))
-            problems.forEach { problem -> ToolChip(problem.label, enabled = true) { onReport(problem) } }
-        }
+        BubbleProblem.entries.forEach { problem -> ToolChip(problem.label, enabled = true) { onReport(problem) } }
         ToolChip("Cancel", enabled = true, onClick = onCancel)
     }
 }
@@ -460,7 +481,23 @@ private fun SendPrompt(count: Int, modifier: Modifier, onSend: () -> Unit, onDro
 }
 // KMK <--
 
-private enum class DebugAction { EARLIER, LATER, DELETE, ADD, EXPORT, PANEL, DONE, CANCEL }
+private enum class DebugAction {
+    EARLIER,
+    LATER,
+    DELETE,
+    ADD,
+    EXPORT,
+    PANEL,
+    DONE,
+    CANCEL,
+    PANEL_PREV,
+    PANEL_NEXT,
+    PANEL_EARLIER,
+    PANEL_LATER,
+    PANEL_DELETE,
+    BUBBLE_PREV,
+    BUBBLE_NEXT,
+}
 
 @Composable
 private fun DebugToolbar(state: ImageViewerState, modifier: Modifier, onAction: (DebugAction) -> Unit) {
@@ -481,6 +518,29 @@ private fun DebugToolbar(state: ImageViewerState, modifier: Modifier, onAction: 
                     .padding(horizontal = 10.dp, vertical = 6.dp),
             )
         }
+        if (report == BubbleProblem.PANELS) {
+            val count = state.editPanels.size
+            val picked = state.panelActive in state.editPanels.indices
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ToolChip(if (picked) "P${state.panelActive + 1}/$count" else "$count panels", enabled = false) {}
+                ToolChip("◀", enabled = picked) { onAction(DebugAction.PANEL_PREV) }
+                ToolChip("▶", enabled = picked) { onAction(DebugAction.PANEL_NEXT) }
+                ToolChip("Earlier", enabled = picked) { onAction(DebugAction.PANEL_EARLIER) }
+                ToolChip("Later", enabled = picked) { onAction(DebugAction.PANEL_LATER) }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)) {
+                ToolChip("Delete", enabled = picked) { onAction(DebugAction.PANEL_DELETE) }
+                ToolChip(if (state.drawingPanel) "Cancel add" else "Add", enabled = true) {
+                    onAction(DebugAction.PANEL)
+                }
+                ToolChip("Save", enabled = true) { onAction(DebugAction.DONE) }
+                ToolChip("Cancel", enabled = true) { onAction(DebugAction.CANCEL) }
+            }
+            return@Column
+        }
         // KMK <--
         Row(
             horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
@@ -489,25 +549,23 @@ private fun DebugToolbar(state: ImageViewerState, modifier: Modifier, onAction: 
             val count = state.debugRects.size
             val place = if (open) "${state.debugActive + 1}/$count" else "$count found"
             ToolChip(place, enabled = false) {}
-            ToolChip("◀ Earlier", enabled = open) { onAction(DebugAction.EARLIER) }
-            ToolChip("Later ▶", enabled = open) { onAction(DebugAction.LATER) }
+            if (report != null) {
+                ToolChip("◀", enabled = open) { onAction(DebugAction.BUBBLE_PREV) }
+                ToolChip("▶", enabled = true) { onAction(DebugAction.BUBBLE_NEXT) }
+            }
+            ToolChip("Earlier", enabled = open) { onAction(DebugAction.EARLIER) }
+            ToolChip("Later", enabled = open) { onAction(DebugAction.LATER) }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)) {
             ToolChip("Delete", enabled = open) { onAction(DebugAction.DELETE) }
-            ToolChip(if (state.debugAdding) "Cancel" else "Add", enabled = true) { onAction(DebugAction.ADD) }
+            ToolChip(if (state.debugAdding) "Cancel add" else "Add", enabled = true) { onAction(DebugAction.ADD) }
             if (report == null) {
                 ToolChip("Export (${state.debugLogged})", enabled = true) { onAction(DebugAction.EXPORT) }
-            }
-        }
-        // KMK -->
-        if (report != null) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)) {
-                ToolChip(if (state.drawingPanel) "Cancel panel" else "Draw panel", enabled = true) {
-                    onAction(DebugAction.PANEL)
-                }
-                ToolChip("Done", enabled = true) { onAction(DebugAction.DONE) }
+            } else {
+                ToolChip("Save", enabled = true) { onAction(DebugAction.DONE) }
                 ToolChip("Cancel", enabled = true) { onAction(DebugAction.CANCEL) }
             }
         }
-        // KMK <--
     }
 }
 
