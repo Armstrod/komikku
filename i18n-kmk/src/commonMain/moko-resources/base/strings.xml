@@ -273,6 +273,8 @@
     <string name="pref_bubble_dim_strength_summary">%s. How faint upcoming bubbles are - the strongest covers them completely</string>
     <string name="pref_bubble_follow_panel">Keep the view to the panel</string>
     <string name="pref_bubble_follow_panel_summary">Show the whole panel when it fits with readable text, so stepping between its bubbles keeps the view still. When it\'s too big, the view stays inside the panel and moves only as far as the next bubble needs, rather than jumping to centre each one</string>
+    <string name="pref_bubble_show_outlines">Show bubble and panel outlines</string>
+    <string name="pref_bubble_show_outlines_summary">While reading, number and outline every bubble (blue, the current one red) and panel (green: dashed as found, solid where drawn by hand)</string>
     <string name="pref_bubble_debug">Bubble debug mode</string>
     <string name="pref_bubble_report_repo">Problem reports repository</string>
     <string name="pref_bubble_report_repo_summary">%s - long-press while stepping through bubbles to report a problem. Reports upload here as files</string>

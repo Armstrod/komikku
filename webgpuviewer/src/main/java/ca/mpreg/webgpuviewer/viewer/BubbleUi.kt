@@ -68,7 +68,7 @@ private val Active = Color(0xFFE53935)
 private val Found = Color(0xFF1E88E5)
 private val Draft = Color(0xFFFFC400)
 private val Chip = Color(0xE0202020)
-private val PanelColor = Color(0xFFFF9800)
+private val PanelColor = Color(0xFF2E7D32)
 
 private fun DrawScope.panelBox(p: FloatArray, stroke: Stroke) = drawRect(
     color = PanelColor,
@@ -109,7 +109,7 @@ internal fun BubbleUi(state: ImageViewerState) {
             marks.forEachIndexed { i, b -> if (i != active && !b.panelStop) shape(b.outlineImage, b.bounds, Found) }
             marks.getOrNull(active)?.let { shape(it.outlineImage, it.bounds, Active) }
             // Debug: panels in orange - dashed as found round the bubbles, solid where drawn by hand.
-            if (debug) {
+            if (debug || state.showOutlines) {
                 val dashed = PathEffect.dashPathEffect(floatArrayOf(10.dp.toPx(), 6.dp.toPx()))
                 for (p in state.debugPanels) panelBox(p, Stroke(width = 2.dp.toPx(), pathEffect = dashed))
                 for (p in state.debugHandPanels) panelBox(p, Stroke(width = 3.dp.toPx()))
@@ -145,7 +145,20 @@ internal fun BubbleUi(state: ImageViewerState) {
             }
         }
 
-        if (debug) {
+        if (debug || state.showOutlines) {
+            // Panels numbered at their top right, in green, out of the way of the bubbles' numbers.
+            state.debugPanelOrder.forEachIndexed { i, p ->
+                val density = LocalDensity.current
+                val chip = with(density) { 30.dp.toPx() }
+                BasicText(
+                    text = "P${i + 1}",
+                    style = TextStyle(color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold),
+                    modifier = Modifier
+                        .offset { IntOffset((p[2] * width - chip).roundToInt(), (p[1] * height).roundToInt()) }
+                        .background(PanelColor, RoundedCornerShape(3.dp))
+                        .padding(horizontal = 4.dp, vertical = 1.dp),
+                )
+            }
             state.debugRects.forEachIndexed { i, r ->
                 BasicText(
                     text = "${i + 1}",

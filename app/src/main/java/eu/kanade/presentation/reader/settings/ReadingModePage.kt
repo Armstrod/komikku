@@ -296,6 +296,10 @@ private fun ColumnScope.WebGpuViewerSettings(screenModel: ReaderSettingsScreenMo
                 }
             }
             CheckboxItem(
+                label = stringResource(KMR.strings.pref_bubble_show_outlines),
+                pref = screenModel.preferences.bubbleShowOutlines(),
+            )
+            CheckboxItem(
                 label = stringResource(KMR.strings.pref_bubble_debug),
                 pref = screenModel.preferences.bubbleDebug(),
             )

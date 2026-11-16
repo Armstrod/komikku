@@ -269,6 +269,9 @@ class ReaderPreferences(
     /** A GitHub token allowed to write that repository's contents. Empty: reports wait on the phone. */
     fun bubbleReportToken() = preferenceStore.getString("webgpu_bubble_report_token", "")
 
+    /** While reading, the page's bubbles and panels outlined and numbered, as in debug mode. */
+    fun bubbleShowOutlines() = preferenceStore.getBoolean("webgpu_bubble_show_outlines", false)
+
     /** Every bubble found outlined and numbered, with tools to correct them and a log to export. */
     fun bubbleDebug() = preferenceStore.getBoolean("webgpu_bubble_debug", false)
 

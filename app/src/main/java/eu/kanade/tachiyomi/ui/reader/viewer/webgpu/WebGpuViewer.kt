@@ -1103,6 +1103,11 @@ open class WebGpuViewer(
             pager.state.hideUpcoming = config.bubbleHideUpcoming
             pager.state.dimUpcoming = config.bubbleDimStrength.coerceIn(0, 100) / 100f
             pager.state.followPanel = config.bubbleFollowPanel
+            val outlines = config.bubbleZoom && config.bubbleShowOutlines
+            if (pager.state.showOutlines != outlines) {
+                pager.state.showOutlines = outlines
+                pager.state.refreshDebug()
+            }
             // Tenths of a millimetre to screen pixels, by the display's own density.
             pager.state.minLetterPx = config.bubbleMinTextHeight / 10f / MM_PER_INCH *
                 activity.resources.displayMetrics.ydpi

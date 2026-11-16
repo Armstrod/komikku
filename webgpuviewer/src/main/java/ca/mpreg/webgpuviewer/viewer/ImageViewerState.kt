@@ -404,6 +404,16 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     var debugHandPanels: List<FloatArray> by mutableStateOf(emptyList())
         private set
 
+    /** Every panel above, numbered in the order the page's stops reach them. */
+    var debugPanelOrder: List<FloatArray> by mutableStateOf(emptyList())
+        private set
+
+    /**
+     * Outlines and numbers for the page's bubbles and panels while reading, as debug mode shows
+     * them - see BubbleUi.
+     */
+    var showOutlines: Boolean by mutableStateOf(false)
+
     /** Panels drawn by hand on [handPanelsPage], on screen normalised - kept by [finishReport]. */
     private var handPanels = ArrayList<FloatArray>()
     private var handPanelsPage: ImagePage? = null
@@ -416,14 +426,15 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         } else {
             seq.indexOfFirst { it === open || it.rect.contentEquals(open.rect) }
         }
-        val shown = if (seq != null && (bubbleDebug || bubbleDock)) seq else emptyList()
+        val shown = if (seq != null && (bubbleDebug || bubbleDock || showOutlines)) seq else emptyList()
         if (marks != shown) marks = shown
         markActive = if (shown.isEmpty()) -1 else active
-        if (!bubbleDebug || seq == null) {
+        if (!(bubbleDebug || showOutlines) || seq == null) {
             if (debugRects.isNotEmpty()) debugRects = emptyList()
             debugActive = -1
             if (debugPanels.isNotEmpty()) debugPanels = emptyList()
             if (debugHandPanels.isNotEmpty()) debugHandPanels = emptyList()
+            if (debugPanelOrder.isNotEmpty()) debugPanelOrder = emptyList()
             return
         }
         debugRects = seq.map { it.bounds }
@@ -436,9 +447,9 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         }
         val hand = handPanels.toList()
         debugHandPanels = hand
-        debugPanels = seq.mapNotNull { it.panel }
-            .distinctBy { it.toList() }
-            .filter { p -> hand.none { it.contentEquals(p) } }
+        val reached = seq.mapNotNull { it.panel }.distinctBy { it.toList() }
+        debugPanels = reached.filter { p -> hand.none { it.contentEquals(p) } }
+        debugPanelOrder = reached + hand.filter { h -> reached.none { it.contentEquals(h) } }
         // KMK <--
     }
 
