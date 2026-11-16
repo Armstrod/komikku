@@ -28,10 +28,10 @@ interface BubbleStore {
  */
 internal object BubbleFile {
     private const val MAGIC = 0x42554231 // "BUB1"
-    private const val VERSION = 3
+    private const val VERSION = 4
 
     /** What a file holds: the bubbles, and the panels drawn by hand on the image (map pixels). */
-    class Kept(val items: List<BubbleZoom.Item>, val panels: List<IntArray>)
+    class Kept(val items: List<BubbleZoom.Item>, val panels: List<IntArray>, val shapes: List<FloatArray>)
 
     /** The print's side: the image as this many cells across and down, each its mean luma. */
     private const val PRINT = 8
@@ -47,6 +47,7 @@ internal object BubbleFile {
         rightToLeft: Boolean,
         items: List<BubbleZoom.Item>,
         panels: List<IntArray> = emptyList(),
+        shapes: List<FloatArray> = emptyList(),
     ): ByteArray {
         val bytes = ByteArrayOutputStream()
         DataOutputStream(GZIPOutputStream(bytes)).use { out ->
@@ -104,6 +105,12 @@ internal object BubbleFile {
                 out.writeFloat(p[1] / h)
                 out.writeFloat(p[2] / w)
                 out.writeFloat(p[3] / h)
+            }
+            // Version 4: the panels as found, polygons.
+            out.writeInt(shapes.size)
+            for (s in shapes) {
+                out.writeInt(s.size / 2)
+                for (i in s.indices) out.writeFloat(s[i] / (if (i % 2 == 0) w else h))
             }
         }
         return bytes.toByteArray()
@@ -198,7 +205,15 @@ internal object BubbleFile {
             } else {
                 BubbleDetect.readingOrder(map, items.map { it.box }, rightToLeft).map { items[it] }
             }
-            Kept(ordered, panels)
+            val shapes = if (version >= 4) {
+                List(input.readInt()) {
+                    val points = input.readInt()
+                    FloatArray(points * 2) { i -> input.readFloat() * (if (i % 2 == 0) w else h) }
+                }
+            } else {
+                emptyList()
+            }
+            Kept(ordered, panels, shapes)
         }
     }.getOrNull()
 

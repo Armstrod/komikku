@@ -14,6 +14,8 @@ cp "$REPO/webgpuviewer/src/main/java/ca/mpreg/webgpuviewer/renderer/InkMap.kt" "
 # Internal in the app; public here so the tools can call it.
 sed 's/^internal object/object/' "$REPO/webgpuviewer/src/main/java/ca/mpreg/webgpuviewer/viewer/BubbleDetect.kt" > "$OUT/src/BubbleDetect.kt"
 java -cp "$GRADLE_LIB/*" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler -no-stdlib -no-reflect -cp "$STDLIB" \
-    -d "$OUT" "$OUT/src/InkMap.kt" "$OUT/src/BubbleDetect.kt" "$HERE/Eval.kt" "$HERE/Frames.kt" 2>&1 | grep -E "error|e: " || true
-if [ "$1" = "frames" ]; then shift; MAIN=FramesKt; INPUT=$WORK/frames.txt; else MAIN=EvalKt; INPUT=$WORK/pages.txt; fi
+    -d "$OUT" "$OUT/src/InkMap.kt" "$OUT/src/BubbleDetect.kt" "$HERE/Eval.kt" "$HERE/Frames.kt" "$HERE/Panels.kt" 2>&1 | grep -E "error|e: " || true
+if [ "$1" = "frames" ]; then shift; MAIN=FramesKt; INPUT=$WORK/frames.txt
+elif [ "$1" = "panels" ]; then shift; MAIN=PanelsKt; INPUT=$WORK/panels.txt
+else MAIN=EvalKt; INPUT=$WORK/pages.txt; fi
 java -cp "$OUT:$STDLIB" $MAIN "$INPUT" "$@" 2>&1 | grep -v JAVA_TOOL

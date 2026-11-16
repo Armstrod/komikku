@@ -398,7 +398,10 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     var markActive: Int by mutableStateOf(-1)
         private set
 
-    /** Debug: the panels found round the page's bubbles, and those drawn by hand - see BubbleUi. */
+    /**
+     * Debug: the page's panels as found, polygons (x, y pairs) on screen, and those drawn by
+     * hand, boxes - see BubbleUi.
+     */
     var debugPanels: List<FloatArray> by mutableStateOf(emptyList())
         private set
     var debugHandPanels: List<FloatArray> by mutableStateOf(emptyList())
@@ -447,9 +450,31 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         }
         val hand = handPanels.toList()
         debugHandPanels = hand
-        val reached = seq.mapNotNull { it.panel }.distinctBy { it.toList() }
-        debugPanels = reached.filter { p -> hand.none { it.contentEquals(p) } }
-        debugPanelOrder = reached + hand.filter { h -> reached.none { it.contentEquals(h) } }
+        // The panels as found - shapes along their borders, or for a page scanned before there
+        // were shapes, the panels round its bubbles - less any a panel drawn by hand replaces.
+        fun rect(p: FloatArray) = floatArrayOf(p[0], p[1], p[2], p[1], p[2], p[3], p[0], p[3])
+        fun middle(p: FloatArray): Pair<Float, Float> {
+            var x = 0f
+            var y = 0f
+            for (i in p.indices step 2) {
+                x += p[i]
+                y += p[i + 1]
+            }
+            return x * 2 / p.size to y * 2 / p.size
+        }
+        val shapes = page?.takeIf { width > 0 && height > 0 }?.let { BubbleZoom.panelShapesOf(it, width, height) }
+            .orEmpty()
+            .ifEmpty { seq.mapNotNull { it.panel }.distinctBy { it.toList() }.map { rect(it) } }
+        val found = shapes.filter { s ->
+            val (mx, my) = middle(s)
+            hand.none { h -> mx in h[0]..h[2] && my in h[1]..h[3] }
+        }
+        debugPanels = found
+        // Numbered in the order the stops reach them; panels no stop is in, after.
+        val all = found + hand.map { rect(it) }
+        fun firstStop(p: FloatArray): Int = seq.indexOfFirst { BubbleZoom.inPolygon(p, it.centerX, it.centerY) }
+            .let { if (it < 0) Int.MAX_VALUE else it }
+        debugPanelOrder = all.withIndex().sortedWith(compareBy({ firstStop(it.value) }, { it.index })).map { it.value }
         // KMK <--
     }
 
@@ -664,6 +689,8 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             BubbleZoom.onImage(page, width, height, rect)?.let { (image, bounds) ->
                 BubbleDebugLog.panel(label, image, bounds)
             }
+            // The bubbles' panels as they now stand, in the log too.
+            logEdit(page, "panel drawn")
         }
         // Framed again with the panel as now drawn.
         bubble?.takeIf { it.page === page && cameraMode(it) }?.let { b ->

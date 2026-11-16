@@ -43,6 +43,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -69,6 +70,17 @@ private val Found = Color(0xFF1E88E5)
 private val Draft = Color(0xFFFFC400)
 private val Chip = Color(0xE0202020)
 private val PanelColor = Color(0xFF2E7D32)
+
+/** A panel's polygon (x, y pairs, normalised) outlined. */
+private fun DrawScope.panelShape(p: FloatArray, stroke: Stroke) {
+    if (p.size < 6) return
+    val path = Path().apply {
+        moveTo(p[0] * size.width, p[1] * size.height)
+        for (i in 2 until p.size step 2) lineTo(p[i] * size.width, p[i + 1] * size.height)
+        close()
+    }
+    drawPath(path, PanelColor, style = stroke)
+}
 
 private fun DrawScope.panelBox(p: FloatArray, stroke: Stroke) = drawRect(
     color = PanelColor,
@@ -111,7 +123,7 @@ internal fun BubbleUi(state: ImageViewerState) {
             // Debug: panels in orange - dashed as found round the bubbles, solid where drawn by hand.
             if (debug || state.showOutlines) {
                 val dashed = PathEffect.dashPathEffect(floatArrayOf(10.dp.toPx(), 6.dp.toPx()))
-                for (p in state.debugPanels) panelBox(p, Stroke(width = 2.dp.toPx(), pathEffect = dashed))
+                for (p in state.debugPanels) panelShape(p, Stroke(width = 2.dp.toPx(), pathEffect = dashed))
                 for (p in state.debugHandPanels) panelBox(p, Stroke(width = 3.dp.toPx()))
             }
             // Docked but not among the marks - one opened by hand, say: its box at least.
@@ -150,11 +162,14 @@ internal fun BubbleUi(state: ImageViewerState) {
             state.debugPanelOrder.forEachIndexed { i, p ->
                 val density = LocalDensity.current
                 val chip = with(density) { 30.dp.toPx() }
+                // At the top right of its bounds, inside.
+                val right = p.filterIndexed { k, _ -> k % 2 == 0 }.max()
+                val top = p.filterIndexed { k, _ -> k % 2 == 1 }.min()
                 BasicText(
                     text = "P${i + 1}",
                     style = TextStyle(color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold),
                     modifier = Modifier
-                        .offset { IntOffset((p[2] * width - chip).roundToInt(), (p[1] * height).roundToInt()) }
+                        .offset { IntOffset((right * width - chip).roundToInt(), (top * height).roundToInt()) }
                         .background(PanelColor, RoundedCornerShape(3.dp))
                         .padding(horizontal = 4.dp, vertical = 1.dp),
                 )

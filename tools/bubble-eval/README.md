@@ -9,7 +9,12 @@ tools/bubble-eval/prepare.py /tmp/be ~/logs/bubble-debug-*.zip
 tools/bubble-eval/run.sh /tmp/be          # recall, extra finds, reading order, time per page
 tools/bubble-eval/run.sh /tmp/be -v       # per page: missed bubbles and computed order
 tools/bubble-eval/run.sh /tmp/be frames   # framing rules vs frames set by hand
+tools/bubble-eval/run.sh /tmp/pd panels -o /tmp/pd/out   # panel shapes vs panels drawn by hand
 ```
+
+`panels` reads `panels.txt` (`label|image|rtl|bubble boxes|hand panels`, normalised, boxes
+`;`-separated) made from page-fix reports, and prints, for each panel drawn by hand, the
+found panel overlapping it most (IoU of bounds). `-o` writes each page's panel polygons.
 
 Text recognition (ML Kit) doesn't run here, so "extra" counts candidates the app would then
 confirm or drop by reading the page; recall and order are what the app gets before that.

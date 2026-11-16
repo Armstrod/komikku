@@ -741,6 +741,86 @@ internal object BubbleDetect {
         return out
     }
 
+    // KMK -->
+    /** A panel holding less artwork than this share of the page is gutter, not a panel. */
+    private const val MIN_PANEL_INK = 0.01f
+
+    /**
+     * The page's panels as shapes, in reading order - see [panels]: each piece the gutters cut
+     * the page into, bounded by those cuts - slanted ones too - and drawn in to its artwork, as
+     * polygons (x0, y0, x1, y1, ...) on [map]. Cut from one another, they never overlap.
+     */
+    fun panelShapes(
+        map: InkMap,
+        rightToLeft: Boolean,
+        bubbles: List<IntArray> = emptyList(),
+        gutterMap: BooleanArray? = null,
+    ): List<FloatArray> {
+        val gutter = gutterMap ?: gutters(map)
+        return panels(map, rightToLeft, bubbles, gutter).mapNotNull { shapeOf(map, gutter, it) }
+    }
+
+    /** [piece] as a polygon: its bounds clipped by its cuts, drawn in to the artwork in it. */
+    private fun shapeOf(map: InkMap, gutter: BooleanArray, piece: Piece): FloatArray? {
+        val w = map.width
+        var bx0 = Int.MAX_VALUE
+        var by0 = Int.MAX_VALUE
+        var bx1 = -1
+        var by1 = -1
+        var ink = 0
+        for (y in piece.y0 until piece.y1) {
+            for (x in piece.x0 until piece.x1) {
+                if (gutter[y * w + x] || !piece.contains(x, y)) continue
+                ink++
+                if (x < bx0) bx0 = x
+                if (x > bx1) bx1 = x
+                if (y < by0) by0 = y
+                if (y > by1) by1 = y
+            }
+        }
+        if (ink < MIN_PANEL_INK * w * map.height) return null
+        var poly = floatArrayOf(
+            bx0.toFloat(), by0.toFloat(),
+            bx1 + 1f, by0.toFloat(),
+            bx1 + 1f, by1 + 1f,
+            bx0.toFloat(), by1 + 1f,
+        )
+        for (cut in piece.cuts) {
+            poly = clip(poly) { x, y ->
+                val u = if (cut.horizontal) x else y
+                val v = if (cut.horizontal) y else x
+                cut.side * (v - (cut.v0 + cut.slope * (u - cut.u0)))
+            }
+            if (poly.size < 6) return null
+        }
+        return poly
+    }
+
+    /** [poly] (x, y pairs) cut to where [side] is at least 0 - Sutherland-Hodgman, one edge. */
+    private fun clip(poly: FloatArray, side: (Float, Float) -> Float): FloatArray {
+        val out = ArrayList<Float>()
+        val n = poly.size / 2
+        for (i in 0 until n) {
+            val ax = poly[2 * i]
+            val ay = poly[2 * i + 1]
+            val bx = poly[2 * ((i + 1) % n)]
+            val by = poly[2 * ((i + 1) % n) + 1]
+            val sa = side(ax, ay)
+            val sb = side(bx, by)
+            if (sa >= 0f) {
+                out += ax
+                out += ay
+            }
+            if ((sa >= 0f) != (sb >= 0f)) {
+                val t = sa / (sa - sb)
+                out += ax + (bx - ax) * t
+                out += ay + (by - ay) * t
+            }
+        }
+        return out.toFloatArray()
+    }
+    // KMK <--
+
     /** [gutters], for [panelAround] - found once for a page's bubbles. */
     fun gutterMap(map: InkMap): BooleanArray = gutters(map)
 

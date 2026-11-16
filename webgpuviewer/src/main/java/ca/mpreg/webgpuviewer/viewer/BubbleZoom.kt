@@ -474,11 +474,58 @@ internal object BubbleZoom {
             val drawn = panels
                 .filter { p -> (p[0] + p[2]) * 0.5f in r[0]..r[2] && (p[1] + p[3]) * 0.5f in r[1]..r[3] }
                 .map { toMap(it) }
-            synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, items, drawn) }
+            val shapes = synchronized(cache) { cache[map]?.shapes }.orEmpty()
+            synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, items, drawn, shapes) }
             val key = keyOf?.invoke(image) ?: return@forEachImage
-            runCatching { store?.write(key, BubbleFile.encode(map, rightToLeft, items, drawn)) }
+            runCatching { store?.write(key, BubbleFile.encode(map, rightToLeft, items, drawn, shapes)) }
                 .onFailure { Log.w("BubbleZoom", "Couldn't keep corrected bubbles", it) }
         }
+    }
+
+    /** [page]'s panels as found - see [BubbleDetect.panelShapes] - as polygons on screen, normalised. */
+    fun panelShapesOf(page: ImagePage.ImageSingle, screenWidth: Int, screenHeight: Int): List<FloatArray> {
+        val out = ArrayList<FloatArray>()
+        page.forEachImage { image, offsetX, imageScale ->
+            val map = image.inkMap ?: return@forEachImage
+            val shapes = synchronized(cache) { cache[map]?.shapes }.orEmpty()
+            if (shapes.isEmpty()) return@forEachImage
+            val r = imageRectOf(page, offsetX, imageScale, image, screenWidth, screenHeight)
+            val sx = (r[2] - r[0]) / map.width
+            val sy = (r[3] - r[1]) / map.height
+            for (s in shapes) out += FloatArray(s.size) { i -> if (i % 2 == 0) r[0] + s[i] * sx else r[1] + s[i] * sy }
+        }
+        return out
+    }
+
+    /** Whether ([x], [y]) lies in [poly] (x, y pairs). */
+    fun inPolygon(poly: FloatArray, x: Float, y: Float): Boolean {
+        var inside = false
+        val n = poly.size / 2
+        var j = n - 1
+        for (i in 0 until n) {
+            val xi = poly[2 * i]
+            val yi = poly[2 * i + 1]
+            val xj = poly[2 * j]
+            val yj = poly[2 * j + 1]
+            if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside
+            j = i
+        }
+        return inside
+    }
+
+    /** [poly]'s bounds, as whole map pixels (x0, y0, x1, y1). */
+    private fun boundsOf(poly: FloatArray): IntArray {
+        var x0 = Float.MAX_VALUE
+        var y0 = Float.MAX_VALUE
+        var x1 = -Float.MAX_VALUE
+        var y1 = -Float.MAX_VALUE
+        for (i in poly.indices step 2) {
+            x0 = min(x0, poly[i])
+            x1 = max(x1, poly[i])
+            y0 = min(y0, poly[i + 1])
+            y1 = max(y1, poly[i + 1])
+        }
+        return intArrayOf(x0.toInt(), y0.toInt(), kotlin.math.ceil(x1).toInt(), kotlin.math.ceil(y1).toInt())
     }
 
     /** The panels drawn by hand on [page] and kept - see [keep] - on screen normalised. */
@@ -518,6 +565,8 @@ internal object BubbleZoom {
         val items: List<Item>,
         /** Panels drawn by hand on the image, map pixels. */
         val panels: List<IntArray> = emptyList(),
+        /** The image's panels as found, polygons on the map, in reading order. */
+        val shapes: List<FloatArray> = emptyList(),
     )
 
     /** How far, in map pixels, a corrected bubble's box may be from the one found to be it. */
@@ -547,7 +596,26 @@ internal object BubbleZoom {
         val kept = key?.let { k -> runCatching { store?.read(k) }.getOrNull() }
             ?.let { BubbleFile.decode(it, map, rightToLeft) }
         if (kept != null) {
-            synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, kept.items, kept.panels) }
+            // KMK -->
+            // Kept before panels had shapes: found now, and the bubbles not in a panel drawn by
+            // hand framed with them.
+            val shapes = kept.shapes.ifEmpty {
+                val found = BubbleDetect.panelShapes(map, rightToLeft, kept.items.map { it.box })
+                for (item in kept.items) {
+                    if (item.panelStop) continue
+                    val cx = (item.box[0] + item.box[2]) * 0.5f
+                    val cy = (item.box[1] + item.box[3]) * 0.5f
+                    if (kept.panels.any { p -> cx >= p[0] && cx <= p[2] && cy >= p[1] && cy <= p[3] }) continue
+                    found.firstOrNull { inPolygon(it, cx, cy) }?.let { item.panel = boundsOf(it) }
+                }
+                if (key != null && found.isNotEmpty()) {
+                    val data = BubbleFile.encode(map, rightToLeft, kept.items, kept.panels, found)
+                    runCatching { store?.write(key, data) }
+                }
+                found
+            }
+            synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, kept.items, kept.panels, shapes) }
+            // KMK <--
             return kept.items
         }
         // The whole page read first, on ML Kit's own thread, while the shapes are found here:
@@ -588,11 +656,22 @@ internal object BubbleZoom {
         // already does.
         for (caption in captions(map, items.map { it.box }, blocks.orEmpty())) items += caption
         val gutters = BubbleDetect.gutterMap(map)
-        BubbleDetect.panelsAround(map, gutters, items.map { it.box }).forEachIndexed { i, p -> items[i].panel = p }
+        // KMK -->
+        // Each bubble framed with the panel shape it sits in - the page cut along its gutters,
+        // edges on the borders, no two overlapping - or, outside them all, what its middle
+        // reaches without crossing a gutter.
+        val shapes = BubbleDetect.panelShapes(map, rightToLeft, items.map { it.box }, gutters)
+        val around = BubbleDetect.panelsAround(map, gutters, items.map { it.box })
+        items.forEachIndexed { i, item ->
+            val cx = (item.box[0] + item.box[2]) * 0.5f
+            val cy = (item.box[1] + item.box[3]) * 0.5f
+            item.panel = shapes.firstOrNull { inPolygon(it, cx, cy) }?.let { boundsOf(it) } ?: around[i]
+        }
+        // KMK <--
         val ordered = BubbleDetect.readingOrder(map, items.map { it.box }, rightToLeft, gutters).map { items[it] }
-        synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, ordered) }
+        synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, ordered, emptyList(), shapes) }
         if (key != null) {
-            runCatching { store?.write(key, BubbleFile.encode(map, rightToLeft, ordered)) }
+            runCatching { store?.write(key, BubbleFile.encode(map, rightToLeft, ordered, emptyList(), shapes)) }
                 .onFailure { Log.w("BubbleZoom", "Couldn't keep found bubbles", it) }
         }
         return ordered
