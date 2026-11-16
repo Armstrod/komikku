@@ -1,7 +1,7 @@
 #!/bin/sh
 # Compiles BubbleDetect + InkMap from this checkout with the Kotlin compiler bundled in Gradle,
-# then runs Eval (default) or Frames on a work folder made by prepare.py.
-# usage: run.sh WORKDIR [frames] [-v]
+# then runs Eval (default), Frames or Panels on a work folder made by prepare.py.
+# usage: run.sh WORKDIR [frames | panels [-o OUTDIR]] [-v]
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
