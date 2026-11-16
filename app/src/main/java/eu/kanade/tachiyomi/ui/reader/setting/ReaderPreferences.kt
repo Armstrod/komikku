@@ -269,6 +269,9 @@ class ReaderPreferences(
     /** A GitHub token allowed to write that repository's contents. Empty: reports wait on the phone. */
     fun bubbleReportToken() = preferenceStore.getString("webgpu_bubble_report_token", "")
 
+    /** Panels with no bubbles are stops of their own while stepping, shown whole. */
+    fun bubblePanelStops() = preferenceStore.getBoolean("webgpu_bubble_panel_stops", true)
+
     /** While reading, the page's bubbles and panels outlined and numbered, as in debug mode. */
     fun bubbleShowOutlines() = preferenceStore.getBoolean("webgpu_bubble_show_outlines", false)
 

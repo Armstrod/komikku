@@ -417,6 +417,9 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
      */
     var showOutlines: Boolean by mutableStateOf(false)
 
+    /** Panels with no bubbles are stops of their own, shown whole; off, they're passed over. */
+    var panelStops: Boolean = true
+
     /** Panels drawn by hand on [handPanelsPage], on screen normalised - kept by [finishReport]. */
     private var handPanels = ArrayList<FloatArray>()
     private var handPanelsPage: ImagePage? = null
@@ -687,7 +690,8 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             val box = boundsOf(panels[k])
             val mine = bubbles.indices.filter { home[it] == k }
             if (mine.isEmpty()) {
-                val stop = BubbleZoom.manual(page, width, height, box, dockRegion(page), bubbleContext) ?: continue
+                val stop = BubbleZoom.manual(page, width, height, box, dockRegion(page), bubbleContext, anyZoom = true)
+                    ?: continue
                 stop.panelStop = true
                 stop.panel = box
                 out += stop
@@ -826,7 +830,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         // A panel with no bubbles in it is a stop of its own, put in the order where it reads -
         // moved with Earlier and Later - and opened.
         if (seq != null && seq.none { inside(it) } && width > 0 && height > 0) {
-            val stop = BubbleZoom.manual(page, width, height, rect, dockRegion(page), bubbleContext)
+            val stop = BubbleZoom.manual(page, width, height, rect, dockRegion(page), bubbleContext, anyZoom = true)
             if (stop != null) {
                 stop.panelStop = true
                 stop.panel = rect.copyOf()
@@ -921,6 +925,18 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         val h = height
         if (w <= 0 || h <= 0) return null
         framings[frameKey(b)]?.let { return floatArrayOf(it[0], it[1], it[2], dock[0], dock[1]) }
+        // KMK -->
+        // A panel stop: the whole panel, however small it must show.
+        if (b.panelStop) {
+            val p = b.panel ?: b.bounds
+            val band = dock[1] - dock[0]
+            val z = min(
+                CAMERA_WHOLE_WIDTH / (p[2] - p[0]).coerceAtLeast(0.01f),
+                CAMERA_WHOLE_HEIGHT * band / (p[3] - p[1]).coerceAtLeast(0.01f),
+            ).coerceIn(PANEL_STOP_MIN_ZOOM, CAMERA_MAX_ZOOM)
+            return floatArrayOf((p[0] + p[2]) * 0.5f, (p[1] + p[3]) * 0.5f, z, dock[0], dock[1])
+        }
+        // KMK <--
         val bw = (b.bounds[2] - b.bounds[0]) * w
         val bh = (b.bounds[3] - b.bounds[1]) * h
         if (bw <= 0f || bh <= 0f) return null
@@ -1594,10 +1610,13 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         }
         detecting = false
         sequencePage = page
-        sequence = found
-        if (bubbleDebug) startDebugLog(page, found)
+        // KMK -->
+        val stops = if (panelStops) found else found.filter { !it.panelStop }
+        sequence = stops
+        if (bubbleDebug) startDebugLog(page, stops)
         prefetchNext()
-        return found
+        return stops
+        // KMK <--
     }
 
     /** The page's bubbles in reading order, with none open yet - cached as [sequenceFor]'s are. */
@@ -1619,10 +1638,13 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         }
         detecting = false
         sequencePage = page
-        sequence = found
-        if (bubbleDebug) startDebugLog(page, found)
+        // KMK -->
+        val stops = if (panelStops) found else found.filter { !it.panelStop }
+        sequence = stops
+        if (bubbleDebug) startDebugLog(page, stops)
         prefetchNext()
-        return found
+        return stops
+        // KMK <--
     }
 
     /**
@@ -1981,6 +2003,9 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
 
         /** Room kept round a bubble the view keeps to its panel, as a share of half the view. */
         const val PANEL_ROOM = 0.08f
+
+        /** The least zoom a panel stop shows its whole panel at. */
+        const val PANEL_STOP_MIN_ZOOM = 0.2f
 
         /** How far bubbles still to come are faded, by default. */
         const val DIM_DEFAULT = 0.7f

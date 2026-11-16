@@ -353,7 +353,18 @@ internal object BubbleZoom {
             val boxes = ArrayList<IntArray>()
             // Found, read and ordered once per image - see [found] - and only placed here.
             for (item in found(map, openEdge, rightToLeft, keyOf?.invoke(image))) {
-                val overlay = overlay(page, screenWidth, screenHeight, image, map, imageRect, item.found, dock, context)
+                val overlay = overlay(
+                    page,
+                    screenWidth,
+                    screenHeight,
+                    image,
+                    map,
+                    imageRect,
+                    item.found,
+                    dock,
+                    context,
+                    anyZoom = item.panelStop,
+                )
                     ?: continue
                 // Off screen - the far half of a wide page zoomed to half its width - it can't
                 // be read where it sits.
@@ -495,6 +506,43 @@ internal object BubbleZoom {
         }
     }
 
+    /** A panel with no bubbles is a stop of its own only this big: a share of the page, each way. */
+    private const val STOP_MIN_SIDE = 0.12f
+    private const val STOP_MIN_AREA = 0.04f
+
+    /**
+     * [items] in the order of the panels they sit in - [shapes], in reading order - each
+     * panel's in their own order; a panel with none, big enough, a stop of its own showing it
+     * whole. Bubbles in no panel stay after the one before them.
+     */
+    private fun byPanel(map: InkMap, items: List<Item>, shapes: List<FloatArray>): List<Item> {
+        if (shapes.isEmpty()) return items
+        val home = IntArray(items.size) { i ->
+            val item = items[i]
+            val cx = (item.box[0] + item.box[2]) * 0.5f
+            val cy = (item.box[1] + item.box[3]) * 0.5f
+            shapes.indexOfFirst { inPolygon(it, cx, cy) }
+        }
+        for (i in home.indices) if (home[i] < 0) home[i] = if (i > 0) home[i - 1] else 0
+        val out = ArrayList<Item>()
+        for (k in shapes.indices) {
+            val mine = items.indices.filter { home[it] == k }
+            if (mine.isNotEmpty()) {
+                mine.forEach { out += items[it] }
+                continue
+            }
+            val b = boundsOf(shapes[k])
+            val w = (b[2] - b[0]).coerceAtLeast(1)
+            val h = (b[3] - b[1]).coerceAtLeast(1)
+            if (w < STOP_MIN_SIDE * map.width || h < STOP_MIN_SIDE * map.height) continue
+            if (w.toFloat() * h < STOP_MIN_AREA * map.width * map.height) continue
+            val found = BubbleDetect.Found(b[0], b[1], w, h, ByteArray(w * h) { (-1).toByte() }, true, 0f)
+            val box = intArrayOf(b[0], b[1], b[0] + w, b[1] + h)
+            out += Item(found, null, box, box.copyOf(), 0f, true)
+        }
+        return out
+    }
+
     /** [page]'s panels as found - see [BubbleDetect.panelShapes] - as polygons on screen, normalised. */
     fun panelShapesOf(page: ImagePage.ImageSingle, screenWidth: Int, screenHeight: Int): List<FloatArray> {
         val out = ArrayList<FloatArray>()
@@ -627,9 +675,21 @@ internal object BubbleZoom {
                 }
                 found
             }
-            synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, kept.items, kept.panels, shapes) }
+            // Kept before panels with no bubbles were stops, with no panels set by hand: put in
+            // panel order, with those stops.
+            val items = if (kept.version < 5 && kept.panels.isEmpty() && kept.items.none { it.panelStop }) {
+                byPanel(map, kept.items, shapes).also { list ->
+                    if (key != null) {
+                        val data = BubbleFile.encode(map, rightToLeft, list, kept.panels, shapes)
+                        runCatching { store?.write(key, data) }
+                    }
+                }
+            } else {
+                kept.items
+            }
+            synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, items, kept.panels, shapes) }
             // KMK <--
-            return kept.items
+            return items
         }
         // The whole page read first, on ML Kit's own thread, while the shapes are found here:
         // its blocks confirm each bubble - far quicker than reading every one apart - and what
@@ -681,7 +741,10 @@ internal object BubbleZoom {
             item.panel = shapes.firstOrNull { inPolygon(it, cx, cy) }?.let { boundsOf(it) } ?: around[i]
         }
         // KMK <--
-        val ordered = BubbleDetect.readingOrder(map, items.map { it.box }, rightToLeft, gutters).map { items[it] }
+        val read = BubbleDetect.readingOrder(map, items.map { it.box }, rightToLeft, gutters).map { items[it] }
+        // KMK -->
+        val ordered = byPanel(map, read, shapes)
+        // KMK <--
         synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, ordered, emptyList(), shapes) }
         if (key != null) {
             runCatching { store?.write(key, BubbleFile.encode(map, rightToLeft, ordered, emptyList(), shapes)) }
@@ -951,6 +1014,8 @@ internal object BubbleZoom {
          */
         dock: FloatArray? = null,
         context: Boolean = false,
+        /** Placed however small it must show - a whole panel, say. */
+        anyZoom: Boolean = false,
     ): BubbleOverlay? {
         val sx = (imageRect[2] - imageRect[0]) / map.width
         val sy = (imageRect[3] - imageRect[1]) / map.height
@@ -972,6 +1037,7 @@ internal object BubbleZoom {
             maskHeight = found.height,
             dock = dock,
             context = context,
+            anyZoom = anyZoom,
         )
     }
 
@@ -994,6 +1060,7 @@ internal object BubbleZoom {
         rect: FloatArray,
         dock: FloatArray? = null,
         context: Boolean = false,
+        anyZoom: Boolean = false,
     ): BubbleOverlay? {
         val hit = imageAt(page, screenWidth, screenHeight, (rect[0] + rect[2]) * 0.5f, (rect[1] + rect[3]) * 0.5f)
             ?: return null
@@ -1011,6 +1078,7 @@ internal object BubbleZoom {
             dock = dock,
             context = context,
             minZoom = 1f,
+            anyZoom = anyZoom,
         )?.also { it.manual = true }
     }
 
@@ -1032,7 +1100,9 @@ internal object BubbleZoom {
         dock: FloatArray?,
         context: Boolean = false,
         minZoom: Float = MIN_ZOOM,
+        anyZoom: Boolean = false,
     ): BubbleOverlay? {
+        val dockMinZoom = if (anyZoom) 0f else DOCK_MIN_ZOOM
         val bubbleWidth = (rect[2] - rect[0]) * screenWidth
         val bubbleHeight = (rect[3] - rect[1]) * screenHeight
         if (bubbleWidth <= 0f || bubbleHeight <= 0f) return null
@@ -1051,7 +1121,7 @@ internal object BubbleZoom {
                 DOCK_MAX_ZOOM,
                 min(DOCK_FIT_WIDTH * screenWidth / bubbleWidth, DOCK_FIT_HEIGHT * dockHeight / bubbleHeight),
             )
-            if (docked >= DOCK_MIN_ZOOM && context) {
+            if (docked >= dockMinZoom && context) {
                 // The bubble at that zoom, with as much of the artwork round it as fills the
                 // band - the window kept on the page, so it shows page rather than margin.
                 val halfW = DOCK_FIT_WIDTH * 0.5f / docked
@@ -1089,7 +1159,7 @@ internal object BubbleZoom {
                     shapeHeight = maskHeight,
                 )
             }
-            if (docked >= DOCK_MIN_ZOOM) {
+            if (docked >= dockMinZoom) {
                 // Down the band as far down the page as it sat.
                 val pageTop = imageRect[1].coerceAtLeast(0f)
                 val pageBottom = imageRect[3].coerceAtMost(1f)
@@ -1122,7 +1192,7 @@ internal object BubbleZoom {
             MAX_ZOOM,
             min(FIT_WIDTH * screenWidth / bubbleWidth, FIT_HEIGHT * screenHeight / bubbleHeight),
         )
-        if (zoom < minZoom) return null
+        if (zoom < minZoom && !anyZoom) return null
 
         return BubbleOverlay(
             screenPerImagePixel = screenPerImagePixel,

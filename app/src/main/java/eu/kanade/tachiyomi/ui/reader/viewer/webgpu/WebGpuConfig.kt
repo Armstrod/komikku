@@ -113,6 +113,9 @@ class WebGpuConfig(
     var bubbleShowOutlines = false
         private set
 
+    var bubblePanelStops = true
+        private set
+
     /** Either bubble zoom setting changed. */
     var bubbleZoomChangedListener: (() -> Unit)? = null
 
@@ -255,6 +258,10 @@ class WebGpuConfig(
         )
         readerPreferences.bubbleDimStrength().register(
             { bubbleDimStrength = it },
+            { bubbleZoomChangedListener?.invoke() },
+        )
+        readerPreferences.bubblePanelStops().register(
+            { bubblePanelStops = it },
             { bubbleZoomChangedListener?.invoke() },
         )
         readerPreferences.bubbleShowOutlines().register(

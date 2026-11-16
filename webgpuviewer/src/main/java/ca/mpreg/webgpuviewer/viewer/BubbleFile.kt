@@ -28,10 +28,16 @@ interface BubbleStore {
  */
 internal object BubbleFile {
     private const val MAGIC = 0x42554231 // "BUB1"
-    private const val VERSION = 4
+    private const val VERSION = 5
 
     /** What a file holds: the bubbles, and the panels drawn by hand on the image (map pixels). */
-    class Kept(val items: List<BubbleZoom.Item>, val panels: List<IntArray>, val shapes: List<FloatArray>)
+    class Kept(
+        val items: List<BubbleZoom.Item>,
+        val panels: List<IntArray>,
+        val shapes: List<FloatArray>,
+        /** The file's version: before 5, panels with no bubbles weren't stops yet. */
+        val version: Int = VERSION,
+    )
 
     /** The print's side: the image as this many cells across and down, each its mean luma. */
     private const val PRINT = 8
@@ -213,7 +219,7 @@ internal object BubbleFile {
             } else {
                 emptyList()
             }
-            Kept(ordered, panels, shapes)
+            Kept(ordered, panels, shapes, version)
         }
     }.getOrNull()
 

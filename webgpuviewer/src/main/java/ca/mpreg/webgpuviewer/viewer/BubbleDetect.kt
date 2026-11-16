@@ -760,7 +760,9 @@ internal object BubbleDetect {
         gutterMap: BooleanArray? = null,
     ): List<FloatArray> {
         val gutter = gutterMap ?: gutters(map)
-        val shapes = panels(map, rightToLeft, bubbles, gutter).mapNotNull { shapeOf(map, gutter, it) }
+        // Cut along the gutters alone: cutting round the bubbles too, as reading order does,
+        // splits panels along their bubbles' edges.
+        val shapes = panels(map, rightToLeft, emptyList(), gutter).mapNotNull { shapeOf(map, gutter, it) }
         return orderPanels(shapes.map { boundsOf(it) }, rightToLeft).map { shapes[it] }
     }
 
