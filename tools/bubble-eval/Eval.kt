@@ -36,7 +36,14 @@ fun main(args: Array<String>) {
         val gt = ArrayList<IntArray>()
         if (parts[3].isNotEmpty()) for (bs in parts[3].split(";")) { val b = bs.split(",").map { it.toDouble() }
             gt += intArrayOf((b[0]*w).toInt(), (b[1]*h).toInt(), (b[2]*w).toInt(), (b[3]*h).toInt()) }
-        val t0 = System.nanoTime(); val all = BubbleDetect.findAll(map); tFind += System.nanoTime() - t0; val found = all.map { intArrayOf(it.x0, it.y0, it.x0+it.width, it.y0+it.height) }
+        // The panel detector's frames, where prepare.py's frames step wrote them (image.frames).
+        val framesFile = File(parts[1] + ".frames")
+        val frames = if (framesFile.exists()) framesFile.readLines().filter { it.isNotBlank() }.map { l ->
+            val b = l.split(",").map { it.toDouble() }
+            intArrayOf((b[0]*w).toInt().coerceAtLeast(0), (b[1]*h).toInt().coerceAtLeast(0), (b[2]*w).toInt().coerceAtMost(w), (b[3]*h).toInt().coerceAtMost(h))
+        } else emptyList()
+        val t0 = System.nanoTime(); val all = BubbleDetect.findAll(map, frames = if (System.getenv("NOFRAMES") != null) emptyList() else frames); tFind += System.nanoTime() - t0; val found = all.map { intArrayOf(it.x0, it.y0, it.x0+it.width, it.y0+it.height) }
+        if (System.getenv("DUMP") == label) for (f in found) println("  found " + f.map { it.toFloat() / (if (f.indexOf(it) % 2 == 0) w else h) }.joinToString(",") { "%.3f".format(it) })
         gtTotal += gt.size; det += found.size
         val missed = ArrayList<Int>()
         for ((gi, g) in gt.withIndex()) { if (found.any { cover(it, g) > 0.5f && iou(it, g) > 0.2f }) hit++ else missed += gi }

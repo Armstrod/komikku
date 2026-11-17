@@ -28,7 +28,7 @@ interface BubbleStore {
  */
 internal object BubbleFile {
     private const val MAGIC = 0x42554231 // "BUB1"
-    private const val VERSION = 7
+    private const val VERSION = 8
 
     /** What a file holds: the bubbles, and the panels drawn by hand on the image (map pixels). */
     class Kept(
@@ -37,9 +37,12 @@ internal object BubbleFile {
         val shapes: List<FloatArray>,
         /**
          * The file's version: before 5, panels with no bubbles weren't stops; before 6, panels
-         * weren't split where bubbles cross the gutters; before 7, no panel detector.
+         * weren't split where bubbles cross the gutters; before 7, no panel detector; before 8,
+         * no bubbles found inside its frames.
          */
         val version: Int = VERSION,
+        /** Corrected by hand - kept as it is, not found again. */
+        val corrected: Boolean = false,
     )
 
     /** The print's side: the image as this many cells across and down, each its mean luma. */
@@ -57,6 +60,7 @@ internal object BubbleFile {
         items: List<BubbleZoom.Item>,
         panels: List<IntArray> = emptyList(),
         shapes: List<FloatArray> = emptyList(),
+        corrected: Boolean = false,
     ): ByteArray {
         val bytes = ByteArrayOutputStream()
         DataOutputStream(GZIPOutputStream(bytes)).use { out ->
@@ -121,6 +125,8 @@ internal object BubbleFile {
                 out.writeInt(s.size / 2)
                 for (i in s.indices) out.writeFloat(s[i] / (if (i % 2 == 0) w else h))
             }
+            // Version 8: corrected by hand.
+            out.writeBoolean(corrected)
         }
         return bytes.toByteArray()
     }
@@ -222,7 +228,14 @@ internal object BubbleFile {
             } else {
                 emptyList()
             }
-            Kept(ordered, panels, shapes, version)
+            // Before version 8, a page with a bubble drawn by hand (nothing read in it) or panels
+            // drawn was corrected; one only reordered or pruned can't be told.
+            val corrected = if (version >= 8) {
+                input.readBoolean()
+            } else {
+                panels.isNotEmpty() || items.any { it.text == null && !it.panelStop }
+            }
+            Kept(ordered, panels, shapes, version, corrected)
         }
     }.getOrNull()
 

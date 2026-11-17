@@ -117,7 +117,35 @@ internal object BubbleDetect {
      * Every bubble on [map]: each patch of paper that doesn't reach the page's edge is tried as
      * [find]'s seed, from its brightest pixel, so the same tests decide what is a bubble.
      */
-    fun findAll(map: InkMap, openEdge: Int = NO_EDGE): List<Found> {
+    fun findAll(map: InkMap, openEdge: Int = NO_EDGE, frames: List<IntArray> = emptyList()): List<Found> {
+        val out = ArrayList<Found>()
+        val leaked = if (frames.isEmpty()) null else BooleanArray(map.width * map.height)
+        patches(map, openEdge, null, out, leaked)
+        // KMK -->
+        // Bubbles open to the gutter - drawn running into the panel's border, as some artists
+        // do - flood out into it and are lost above. Within each panel the detector found, its
+        // border closes them.
+        // Only paper that ran too far is tried again, which keeps it quick.
+        if (leaked != null) {
+            for (frame in frames.sortedBy { (it[2] - it[0]) * (it[3] - it[1]) }) {
+                patches(map, openEdge, frame, out, leaked)
+            }
+        }
+        // KMK <--
+        return out
+    }
+
+    /**
+     * [findAll]'s pass over the patches of paper on [map]: all of them, marking in [leaked] those
+     * too big to be a bubble - or, with [clip], only what of those lies inside it, its walls.
+     */
+    private fun patches(
+        map: InkMap,
+        openEdge: Int,
+        clip: IntArray?,
+        out: MutableList<Found>,
+        leaked: BooleanArray?,
+    ) {
         val w = map.width
         val h = map.height
         val luma = map.luma
@@ -127,9 +155,10 @@ internal object BubbleDetect {
         val seen = BooleanArray(w * h)
         val queue = IntArray(w * h)
         val maxArea = (MAX_AREA * w * h).toInt()
-        val out = ArrayList<Found>()
+        fun inside(i: Int) = clip == null ||
+            (leaked!![i] && i % w in clip[0] until clip[2] && i / w in clip[1] until clip[3])
         for (start in 0 until w * h) {
-            if (seen[start] || (luma[start].toInt() and 0xFF) < paper) continue
+            if (seen[start] || (luma[start].toInt() and 0xFF) < paper || !inside(start)) continue
             // One patch of paper, four-connected.
             var head = 0
             var tail = 0
@@ -150,16 +179,19 @@ internal object BubbleDetect {
                 if (py > y1) y1 = py
                 if ((luma[i].toInt() and 0xFF) > (luma[brightest].toInt() and 0xFF)) brightest = i
                 neighbors(i, px, py, w, h) { n ->
-                    if (seen[n] || (luma[n].toInt() and 0xFF) < paper) return@neighbors
+                    if (seen[n] || (luma[n].toInt() and 0xFF) < paper || !inside(n)) return@neighbors
                     seen[n] = true
                     queue[tail++] = n
                 }
             }
             // Paper reaching the page's edge is tried too: a caption box cut by the trim is
             // still a caption - find decides, its lettering test keeping gutters out.
+            if (tail > maxArea && clip == null && leaked != null) {
+                for (k in 0 until tail) leaked[queue[k]] = true
+            }
             if (tail > maxArea || tail < 200) continue
             if (x1 - x0 + 1 < 0.03f * w || y1 - y0 + 1 < 0.02f * h) continue
-            val found = find(map, brightest % w, brightest / w, openEdge, letters = MIN_LETTERS) ?: continue
+            val found = find(map, brightest % w, brightest / w, openEdge, MIN_LETTERS, clip) ?: continue
             // The same bubble can surface twice where the adaptive threshold splits a patch.
             val duplicate = out.any { other ->
                 val ix = max(0, min(found.x0 + found.width, other.x0 + other.width) - max(found.x0, other.x0))
@@ -168,7 +200,6 @@ internal object BubbleDetect {
             }
             if (!duplicate) out += found
         }
-        return out
     }
 
     /** Which side of the map, if any, a bubble may run off - the seam side of a spread's page. */
@@ -182,7 +213,15 @@ internal object BubbleDetect {
      * anything that doesn't look like a bubble - open to the page's edge, too big, too thin, or
      * with nothing written in it.
      */
-    fun find(map: InkMap, x: Int, y: Int, openEdge: Int = NO_EDGE, letters: Int = 0): Found? {
+    fun find(
+        map: InkMap,
+        x: Int,
+        y: Int,
+        openEdge: Int = NO_EDGE,
+        letters: Int = 0,
+        /** Walls (x0, y0, x1, y1): the flood stays inside, as within a panel's border. */
+        clip: IntArray? = null,
+    ): Found? {
         val w = map.width
         val h = map.height
 
@@ -243,6 +282,9 @@ internal object BubbleDetect {
             if (py > y1) y1 = py
             neighbors(i, px, py, w, h) { n ->
                 if (mark[n] == stamp || (map.luma[n].toInt() and 0xFF) < paper) return@neighbors
+                if (clip != null && (n % w !in clip[0] until clip[2] || n / w !in clip[1] until clip[3])) {
+                    return@neighbors
+                }
                 if (tail >= maxArea) return null
                 mark[n] = stamp
                 queue[tail++] = n

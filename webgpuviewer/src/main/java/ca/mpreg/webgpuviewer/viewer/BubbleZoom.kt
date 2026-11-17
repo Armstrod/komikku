@@ -501,7 +501,7 @@ internal object BubbleZoom {
                 ?: synchronized(cache) { cache[map]?.shapes }.orEmpty()
             synchronized(cache) { cache[map] = Cached(openEdge, rightToLeft, items, drawn, kept) }
             val key = keyOf?.invoke(image) ?: return@forEachImage
-            runCatching { store?.write(key, BubbleFile.encode(map, rightToLeft, items, drawn, kept)) }
+            runCatching { store?.write(key, BubbleFile.encode(map, rightToLeft, items, drawn, kept, corrected = true)) }
                 .onFailure { Log.w("BubbleZoom", "Couldn't keep corrected bubbles", it) }
         }
     }
@@ -512,8 +512,8 @@ internal object BubbleZoom {
         rightToLeft: Boolean,
         bubbles: List<IntArray>,
         gutters: BooleanArray? = null,
+        frames: List<FloatArray>? = PanelModel.frames(map),
     ): List<FloatArray> {
-        val frames = PanelModel.frames(map)
         return if (frames != null) {
             BubbleDetect.panelShapesFrom(map, rightToLeft, bubbles, frames, gutters)
         } else {
@@ -671,6 +671,11 @@ internal object BubbleZoom {
         // Found in an earlier session, or ahead of time as the chapter downloaded.
         val kept = key?.let { k -> runCatching { store?.read(k) }.getOrNull() }
             ?.let { BubbleFile.decode(it, map, rightToLeft) }
+            // KMK -->
+            // Found before bubbles were looked for inside the detector's frames, and not
+            // corrected since: found again.
+            ?.takeUnless { it.version < 8 && !it.corrected }
+        // KMK <--
         if (kept != null) {
             // KMK -->
             // Kept before panels had shapes - or before the panel detector found them, with no
@@ -687,7 +692,7 @@ internal object BubbleZoom {
                     found.firstOrNull { inPolygon(it, cx, cy) }?.let { item.panel = boundsOf(it) }
                 }
                 if (key != null && found.isNotEmpty()) {
-                    val data = BubbleFile.encode(map, rightToLeft, kept.items, kept.panels, found)
+                    val data = BubbleFile.encode(map, rightToLeft, kept.items, kept.panels, found, kept.corrected)
                     runCatching { store?.write(key, data) }
                 }
                 found
@@ -697,7 +702,7 @@ internal object BubbleZoom {
             val items = if (stale) {
                 byPanel(map, kept.items.filter { !it.panelStop }, shapes).also { list ->
                     if (key != null) {
-                        val data = BubbleFile.encode(map, rightToLeft, list, kept.panels, shapes)
+                        val data = BubbleFile.encode(map, rightToLeft, list, kept.panels, shapes, kept.corrected)
                         runCatching { store?.write(key, data) }
                     }
                 }
@@ -712,7 +717,19 @@ internal object BubbleZoom {
         // its blocks confirm each bubble - far quicker than reading every one apart - and what
         // lies outside them all is a caption.
         val pending = TextCheck.startBlocks(map, intArrayOf(0, 0, map.width, map.height))
-        val candidates = BubbleDetect.findAll(map, openEdge)
+        // KMK -->
+        // The panel detector's frames: walls for bubbles drawn open to the gutter, then the panels.
+        val frames = PanelModel.frames(map)
+        val walls = frames.orEmpty().map { f ->
+            intArrayOf(
+                f[0].toInt().coerceIn(0, map.width),
+                f[1].toInt().coerceIn(0, map.height),
+                f[2].toInt().coerceIn(0, map.width),
+                f[3].toInt().coerceIn(0, map.height),
+            )
+        }
+        val candidates = BubbleDetect.findAll(map, openEdge, walls)
+        // KMK <--
         val blocks = pending?.await()
         val items = ArrayList<Item>()
         val smallBubble = SMALL_BUBBLE * map.width * map.height
@@ -750,7 +767,7 @@ internal object BubbleZoom {
         // Each bubble framed with the panel shape it sits in - the page cut along its gutters,
         // edges on the borders, no two overlapping - or, outside them all, what its middle
         // reaches without crossing a gutter.
-        val shapes = shapesOf(map, rightToLeft, items.map { it.box }, gutters)
+        val shapes = shapesOf(map, rightToLeft, items.map { it.box }, gutters, frames)
         val around = BubbleDetect.panelsAround(map, gutters, items.map { it.box })
         items.forEachIndexed { i, item ->
             val cx = (item.box[0] + item.box[2]) * 0.5f
@@ -800,11 +817,15 @@ internal object BubbleZoom {
                 }
             }
         }
-        fun covered(box: IntArray) = taken.any { t ->
+        // KMK -->
+        // Covered by the bubbles together: a block the recogniser ran across two bubbles side by
+        // side is theirs, not a caption of its own.
+        fun covered(box: IntArray) = taken.sumOf { t ->
             val ix = max(0, min(t[2], box[2]) - max(t[0], box[0]))
             val iy = max(0, min(t[3], box[3]) - max(t[1], box[1]))
-            ix.toFloat() * iy > 0.5f * (box[2] - box[0]) * (box[3] - box[1])
-        }
+            ix.toDouble() * iy
+        } > 0.5 * (box[2] - box[0]) * (box[3] - box[1])
+        // KMK <--
         return blocks.filter { !covered(it.first) }.map { (b, read) ->
             val (text, letterHeight) = read
             // Room round the lettering, as a caption box would leave.
