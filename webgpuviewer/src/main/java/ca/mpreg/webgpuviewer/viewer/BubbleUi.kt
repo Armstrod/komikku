@@ -71,6 +71,14 @@ private val Draft = Color(0xFFFFC400)
 private val Chip = Color(0xE0202020)
 private val PanelColor = Color(0xFF2E7D32)
 
+// KMK -->
+/** A pan across a panel - its outline, its start and end views, its PF label. */
+private val PanColor = Color(0xFF8E24AA)
+
+/** What confirms a box drawn - bright, to stand out from monochrome artwork. */
+private val Confirm = Color(0xFF2E7D32)
+// KMK <--
+
 /** A panel's polygon (x, y pairs, normalised) outlined. */
 private fun DrawScope.panelShape(p: FloatArray, stroke: Stroke) {
     if (p.size < 6) return
@@ -151,6 +159,33 @@ internal fun BubbleUi(state: ImageViewerState) {
                 val dashed = PathEffect.dashPathEffect(floatArrayOf(10.dp.toPx(), 6.dp.toPx()))
                 for (p in state.debugPanels) panelShape(p, Stroke(width = 2.dp.toPx(), pathEffect = dashed))
                 for (p in state.debugHandPanels) panelBox(p, Stroke(width = 3.dp.toPx()))
+                // KMK -->
+                // Pans: the panel in purple, the view at the pan's start and end dashed inside it.
+                val viewDash = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx()))
+                for (pan in state.debugPans) {
+                    drawRect(
+                        color = PanColor,
+                        topLeft = Offset(pan.panel[0] * size.width, pan.panel[1] * size.height),
+                        size = Size(
+                            (pan.panel[2] - pan.panel[0]) * size.width,
+                            (pan.panel[3] - pan.panel[1]) * size.height,
+                        ),
+                        style = Stroke(width = 3.dp.toPx()),
+                    )
+                    for (v in listOf(pan.start, pan.end)) {
+                        val inset = 3.dp.toPx()
+                        drawRect(
+                            color = PanColor,
+                            topLeft = Offset(v[0] * size.width + inset, v[1] * size.height + inset),
+                            size = Size(
+                                (v[2] - v[0]) * size.width - 2 * inset,
+                                (v[3] - v[1]) * size.height - 2 * inset,
+                            ),
+                            style = Stroke(width = 2.dp.toPx(), pathEffect = viewDash),
+                        )
+                    }
+                }
+                // KMK <--
             }
             // Docked but not among the marks - one opened by hand, say: its box at least.
             if (outline != null && active < 0) {
@@ -226,6 +261,24 @@ internal fun BubbleUi(state: ImageViewerState) {
                         .padding(horizontal = 5.dp, vertical = 1.dp),
                 )
             }
+            // KMK -->
+            // Pans numbered PF1, PF2... at their panel's top left; red while panning.
+            if (state.report == null) {
+                state.debugPans.forEachIndexed { k, pan ->
+                    val x = (pan.panel[0] * width).roundToInt()
+                    val y = (pan.panel[1] * height).roundToInt()
+                    val color = if (pan.stop == state.debugActive) Active else PanColor
+                    BasicText(
+                        text = "PF${k + 1}",
+                        style = TextStyle(color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold),
+                        modifier = Modifier
+                            .offset { IntOffset(x, y) }
+                            .background(color, RoundedCornerShape(3.dp))
+                            .padding(horizontal = 4.dp, vertical = 1.dp),
+                    )
+                }
+            }
+            // KMK <--
         }
 
         // Debug: the view below the page framed by hand with two fingers; one swipes or taps on.
@@ -316,6 +369,7 @@ internal fun BubbleUi(state: ImageViewerState) {
                         DebugAction.BUBBLE_NEXT -> state.reportStep()
                         DebugAction.DONE -> state.finishReport()
                         DebugAction.CANCEL -> state.cancelReport()
+                        DebugAction.RESET_VIEW -> state.resetView()
                     }
                 }
             }
@@ -522,6 +576,7 @@ private enum class DebugAction {
     PANEL_DELETE,
     BUBBLE_PREV,
     BUBBLE_NEXT,
+    RESET_VIEW,
 }
 
 @Composable
@@ -546,18 +601,23 @@ private fun DebugToolbar(state: ImageViewerState, modifier: Modifier, onAction: 
         if (report == BubbleProblem.PANELS) {
             val count = state.editPanels.size
             val picked = state.panelActive in state.editPanels.indices
+            // KMK -->
+            // Big arrows either side of where it's at: easy to hit.
             Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                StepButton("◀", enabled = picked) { onAction(DebugAction.PANEL_PREV) }
                 ToolChip(if (picked) "P${state.panelActive + 1}/$count" else "$count panels", enabled = false) {}
-                ToolChip("◀", enabled = picked) { onAction(DebugAction.PANEL_PREV) }
-                ToolChip("▶", enabled = picked) { onAction(DebugAction.PANEL_NEXT) }
+                StepButton("▶", enabled = picked) { onAction(DebugAction.PANEL_NEXT) }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
                 ToolChip("Earlier", enabled = picked) { onAction(DebugAction.PANEL_EARLIER) }
                 ToolChip("Later", enabled = picked) { onAction(DebugAction.PANEL_LATER) }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)) {
                 ToolChip("Delete", enabled = picked) { onAction(DebugAction.PANEL_DELETE) }
+            }
+            // KMK <--
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
                 ToolChip(if (state.drawingPanel) "Cancel add" else "Add", enabled = true) {
                     onAction(DebugAction.PANEL)
                 }
@@ -566,23 +626,47 @@ private fun DebugToolbar(state: ImageViewerState, modifier: Modifier, onAction: 
             }
             return@Column
         }
+        if (report == BubbleProblem.VIEW) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                StepButton("◀", enabled = open) { onAction(DebugAction.BUBBLE_PREV) }
+                ToolChip(if (open) "${state.debugActive + 1}/${state.debugRects.size}" else "Start", enabled = false) {}
+                StepButton("▶", enabled = true) { onAction(DebugAction.BUBBLE_NEXT) }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
+                ToolChip("Reset view", enabled = open) { onAction(DebugAction.RESET_VIEW) }
+                ToolChip("Save", enabled = true) { onAction(DebugAction.DONE) }
+                ToolChip("Cancel", enabled = true) { onAction(DebugAction.CANCEL) }
+            }
+            return@Column
+        }
+        // KMK <--
+        val count = state.debugRects.size
+        val place = if (open) "${state.debugActive + 1}/$count" else "$count found"
+        // KMK -->
+        if (report != null) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                StepButton("◀", enabled = open) { onAction(DebugAction.BUBBLE_PREV) }
+                ToolChip(place, enabled = false) {}
+                StepButton("▶", enabled = true) { onAction(DebugAction.BUBBLE_NEXT) }
+            }
+        }
         // KMK <--
         Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            val count = state.debugRects.size
-            val place = if (open) "${state.debugActive + 1}/$count" else "$count found"
-            ToolChip(place, enabled = false) {}
-            if (report != null) {
-                ToolChip("◀", enabled = open) { onAction(DebugAction.BUBBLE_PREV) }
-                ToolChip("▶", enabled = true) { onAction(DebugAction.BUBBLE_NEXT) }
-            }
+            if (report == null) ToolChip(place, enabled = false) {}
             ToolChip("Earlier", enabled = open) { onAction(DebugAction.EARLIER) }
             ToolChip("Later", enabled = open) { onAction(DebugAction.LATER) }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)) {
             ToolChip("Delete", enabled = open) { onAction(DebugAction.DELETE) }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
             ToolChip(if (state.debugAdding) "Cancel add" else "Add", enabled = true) { onAction(DebugAction.ADD) }
             if (report == null) {
                 ToolChip("Export (${state.debugLogged})", enabled = true) { onAction(DebugAction.EXPORT) }
@@ -595,20 +679,43 @@ private fun DebugToolbar(state: ImageViewerState, modifier: Modifier, onAction: 
 }
 
 @Composable
-private fun ToolChip(label: String, enabled: Boolean, onClick: () -> Unit) {
+private fun ToolChip(label: String, enabled: Boolean, background: Color = Chip, onClick: () -> Unit) {
     BasicText(
         text = label,
         style = TextStyle(
             color = if (enabled) Color.White else Color(0xFF9E9E9E),
-            fontSize = 12.sp,
+            fontSize = 14.sp,
             fontWeight = FontWeight.Medium,
         ),
         modifier = Modifier
-            .background(Chip, RoundedCornerShape(6.dp))
+            .background(background, RoundedCornerShape(8.dp))
             .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(horizontal = 8.dp, vertical = 8.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
     )
 }
+
+// KMK -->
+/** A big ◀ or ▶ - a thumb's width - for stepping while correcting. */
+@Composable
+private fun StepButton(label: String, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(width = 72.dp, height = 56.dp)
+            .background(Chip, RoundedCornerShape(10.dp))
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        BasicText(
+            text = label,
+            style = TextStyle(
+                color = if (enabled) Color.White else Color(0xFF757575),
+                fontSize = 26.sp,
+                fontWeight = FontWeight.Bold,
+            ),
+        )
+    }
+}
+// KMK <--
 
 /**
  * A box drawn by a drag, then adjusted: a corner dragged resizes it, its middle moves it, a
@@ -689,17 +796,20 @@ private fun DrawBox(
                 drawCircle(Draft, radius = 9.dp.toPx(), center = c)
             }
         }
+        // KMK -->
+        // Where the toolbar is, which this covers while drawing - not over the artwork.
         Row(
-            Modifier.align(Alignment.Center).padding(top = 160.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            Modifier.align(Alignment.BottomCenter).padding(bottom = 48.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             val b = box
             val big = b != null && abs(b[2] - b[0]) > 0.02f * width && abs(b[3] - b[1]) > 0.01f * height
-            ToolChip(confirm, enabled = big) {
+            ToolChip(confirm, enabled = big, background = if (big) Confirm else Chip) {
                 val r = box ?: return@ToolChip
                 onBox(floatArrayOf(r[0] / width, r[1] / height, r[2] / width, r[3] / height))
             }
-            ToolChip("Cancel", enabled = true, onClick = onCancel)
+            ToolChip("Cancel", enabled = true, background = Active, onClick = onCancel)
         }
+        // KMK <--
     }
 }

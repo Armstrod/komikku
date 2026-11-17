@@ -181,6 +181,17 @@ internal class BubbleOverlay(
     /** How tall its letters are on screen at rest, as a share of the screen's height. 0 unknown. */
     var letterHeight: Float = 0f
 
+    // KMK -->
+    /**
+     * A pan across its [panel]: (start x, start y, end x, end y, zoom) - the view's centre at
+     * each end, normalised on screen, and its zoom. See ImageViewerState.withPans.
+     */
+    var pan: FloatArray? = null
+
+    /** A pan put before a panel's bubbles - not a stop found, nor one kept. */
+    var panOnly: Boolean = false
+    // KMK <--
+
     // Render thread only, like everything below.
     private var maskTexture: GPUTexture? = null
     private var maskView: GPUTextureView? = null
@@ -247,6 +258,8 @@ internal class BubbleOverlay(
         it.panelStop = panelStop
         it.panel = panel
         it.letterHeight = letterHeight
+        it.pan = pan
+        it.panOnly = panOnly
     }
 
     /** On the render thread. */

@@ -18,5 +18,11 @@ enum class BubbleProblem(val key: String, val label: String, val hint: String) {
         "◀ ▶ pick a panel (red). Earlier / Later move it in the order, Delete removes it, Add draws " +
             "one. Save when every panel is right",
     ),
+    VIEW(
+        "view",
+        "Fix the view",
+        "◀ ▶ step. Pinch and drag the view below the page with two fingers until it shows what it " +
+            "should. Reset puts it back. Save when done",
+    ),
 }
 // KMK <--

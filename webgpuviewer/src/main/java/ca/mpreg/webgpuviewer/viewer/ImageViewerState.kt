@@ -5,6 +5,8 @@ import android.util.Log
 import android.view.Surface
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationSpec
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.snap
@@ -55,6 +57,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
@@ -428,6 +431,117 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     /** Panels with no bubbles are stops of their own, shown whole; off, they're passed over. */
     var panelStops: Boolean = true
 
+    // KMK -->
+    /**
+     * A panel too big for the view below the page - at a size its letters, or artwork, can be
+     * made out - is panned across, from where it's read first to where it's read last, as a
+     * stop of its own before its bubbles. See [withPans].
+     */
+    var panPanels: Boolean = true
+
+    /** Outlines: each pan as its panel, the view at its start and end, on screen normalised. */
+    var debugPans: List<PanMark> by mutableStateOf(emptyList())
+        private set
+
+    /** A pan shown in outline mode: its panel, its start and end views, its place in the stops. */
+    class PanMark(val panel: FloatArray, val start: FloatArray, val end: FloatArray, val stop: Int)
+
+    /** [stops] without the pans put among them: as found and kept. */
+    private fun withoutPans(stops: List<BubbleOverlay>): List<BubbleOverlay> =
+        if (stops.none { it.panOnly }) stops else stops.filter { !it.panOnly }
+
+    /** [stops] with no pans at all - a panel stop panned across shown whole again. */
+    private fun unpanned(stops: List<BubbleOverlay>): List<BubbleOverlay> =
+        withoutPans(stops).onEach { it.pan = null }
+
+    /**
+     * [stops] with each panel too big for the view panned across before its bubbles - a panel
+     * stop with no bubbles panned instead of shown whole. Its view is as near as the panel's
+     * letters stay legible ([minLetterPx]), else about the page's own size; the pan runs from
+     * its first corner in reading order (top right, reading right to left) to the last.
+     */
+    private fun withPans(stops: List<BubbleOverlay>): List<BubbleOverlay> {
+        val bare = unpanned(stops)
+        val first = bare.firstOrNull() ?: return bare
+        if (!panPanels || !cameraMode(first)) return bare
+        val page = first.page
+        val dock = dockRegion(page) ?: return bare
+        val w = width
+        val h = height
+        if (w <= 0 || h <= 0) return bare
+        val band = dock[1] - dock[0]
+        val pageRect = BubbleZoom.pageRect(page, w, h) ?: floatArrayOf(0f, 0f, 1f, 1f)
+        val out = ArrayList<BubbleOverlay>(bare.size + 4)
+        var i = 0
+        while (i < bare.size) {
+            val panel = bare[i].panel
+            var j = i + 1
+            while (j < bare.size && panel != null && bare[j].panel?.contentEquals(panel) == true) j++
+            val group = bare.subList(i, j)
+            val pan = panel?.let { panFor(it, group, band, pageRect, h) }
+            if (pan != null) {
+                val stop = group.singleOrNull()?.takeIf { it.panelStop }
+                if (stop != null) {
+                    stop.pan = pan
+                } else {
+                    BubbleZoom.manual(page, w, h, panel, dock, bubbleContext, anyZoom = true)?.let { added ->
+                        added.panelStop = true
+                        added.panOnly = true
+                        added.panel = panel.copyOf()
+                        added.pan = pan
+                        out += added
+                    }
+                }
+            }
+            out += group
+            i = j
+        }
+        return out
+    }
+
+    /**
+     * The pan across [panel] for its stops [group] - (start x, start y, end x, end y, zoom), view
+     * centres normalised - or null where it shows near enough whole.
+     */
+    private fun panFor(
+        panel: FloatArray,
+        group: List<BubbleOverlay>,
+        band: Float,
+        pageRect: FloatArray,
+        h: Int,
+    ): FloatArray? {
+        val pw = (panel[2] - panel[0]).coerceAtLeast(0.01f)
+        val ph = (panel[3] - panel[1]).coerceAtLeast(0.01f)
+        val whole = min(CAMERA_WHOLE_WIDTH / pw, CAMERA_WHOLE_HEIGHT * band / ph)
+        val letters = group.filter { !it.panelStop && it.letterHeight > 0f }
+        // Text: as near as its smallest letters need; none, or no least letter size set - not panned.
+        val needed = if (letters.isEmpty()) {
+            PAN_ARTWORK_ZOOM
+        } else {
+            if (minLetterPx <= 0f) return null
+            letters.maxOf { minLetterPx / (it.letterHeight * h) }
+        }
+        val zoom = needed.coerceAtMost(CAMERA_MAX_ZOOM)
+        if (whole >= zoom * PAN_SMALLER) return null
+        val halfX = 0.5f / zoom
+        val halfY = 0.5f * band / zoom
+        val left = keep(keep(panel[0] + halfX, halfX, panel[0], panel[2]), halfX, pageRect[0], pageRect[2])
+        val right = keep(keep(panel[2] - halfX, halfX, panel[0], panel[2]), halfX, pageRect[0], pageRect[2])
+        val top = keep(keep(panel[1] + halfY, halfY, panel[1], panel[3]), halfY, pageRect[1], pageRect[3])
+        val bottom = keep(keep(panel[3] - halfY, halfY, panel[1], panel[3]), halfY, pageRect[1], pageRect[3])
+        val (startX, endX) = if (isReversed) right to left else left to right
+        return floatArrayOf(startX, top, endX, bottom, zoom)
+    }
+
+    /** Fixing the view: the open stop's view set by hand is dropped - framed as found again. */
+    fun resetView() {
+        val b = bubble ?: return
+        if (framings.remove(frameKey(b)) == null) return
+        logEdit(b.page, "view reset")
+        frameFor(b, null)?.let { moveCamera(it, b) }
+    }
+    // KMK <--
+
     /** Panels drawn by hand on [handPanelsPage], on screen normalised - kept by [finishReport]. */
     private var handPanels = ArrayList<FloatArray>()
     private var handPanelsPage: ImagePage? = null
@@ -449,11 +563,29 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             if (debugPanels.isNotEmpty()) debugPanels = emptyList()
             if (debugHandPanels.isNotEmpty()) debugHandPanels = emptyList()
             if (debugPanelOrder.isNotEmpty()) debugPanelOrder = emptyList()
+            if (debugPans.isNotEmpty()) debugPans = emptyList()
             debugActivePanel = -1
             return
         }
         debugRects = seq.map { it.bounds }
         debugStops = seq.indices.filter { seq[it].panelStop }.toSet()
+        // KMK -->
+        val dock = dockRegion(seq.firstOrNull()?.page)
+        debugPans = if (dock == null) {
+            emptyList()
+        } else {
+            seq.indices.mapNotNull { k ->
+                val p = seq[k].pan ?: return@mapNotNull null
+                val panel = seq[k].panel ?: return@mapNotNull null
+                PanMark(
+                    panel,
+                    viewOf(floatArrayOf(p[0], p[1], p[4], dock[0], dock[1])),
+                    viewOf(floatArrayOf(p[2], p[3], p[4], dock[0], dock[1])),
+                    k,
+                )
+            }
+        }
+        // KMK <--
         debugActive = active
         // KMK -->
         val page = getPage(0) as? ImagePage.ImageSingle
@@ -553,6 +685,8 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             debugTemporary = true
         }
         report = problem
+        // The stops as found and kept: no pans among them while correcting.
+        sequence?.let { sequence = it }
         drawingPanel = false
         editPanels = emptyList()
         panelActive = -1
@@ -592,7 +726,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     suspend fun editStep(direction: Int) = withFrameClock {
         when (report) {
             BubbleProblem.PANELS -> panelStep(direction)
-            BubbleProblem.BUBBLES -> if (direction > 0) reportStep() else stepBubble(-1)
+            BubbleProblem.BUBBLES, BubbleProblem.VIEW -> if (direction > 0) reportStep() else stepBubble(-1)
             null -> {}
         }
     }
@@ -749,12 +883,14 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
                 logEdit(page, "panels saved")
             }
         }
+        if (problem == BubbleProblem.VIEW && page != null) logEdit(page, "view saved")
         val seq = sequence?.takeIf { sequencePage === page }
-        if (page != null && seq != null && width > 0 && height > 0) {
+        // Views set by hand are for the report, and this session: the page's stops are as they were.
+        if (problem != BubbleProblem.VIEW && page != null && seq != null && width > 0 && height > 0) {
             val w = width
             val h = height
             val rtl = isReversed
-            val list = seq.toList()
+            val list = withoutPans(seq)
             val hand = handPanels.takeIf { handPanelsPage === page }.orEmpty().toList()
             val kept = shapes
             scope?.launch(Dispatchers.Default) {
@@ -822,6 +958,8 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
 
     private fun endReport() {
         report = null
+        // Pans back among the stops.
+        sequence?.let { sequence = it }
         editPanels = emptyList()
         panelActive = -1
         drawingPanel = false
@@ -949,6 +1087,8 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         if (w <= 0 || h <= 0) return null
         framings[frameKey(b)]?.let { return floatArrayOf(it[0], it[1], it[2], dock[0], dock[1]) }
         // KMK -->
+        // A pan: from its start, glided on to its end once there - see [moveCamera].
+        b.pan?.let { p -> return floatArrayOf(p[0], p[1], p[4], dock[0], dock[1]) }
         // A panel stop: the whole panel, however small it must show.
         if (b.panelStop) {
             val p = b.panel ?: b.bounds
@@ -1093,27 +1233,51 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         return center.coerceIn(hi + room - half, lo - room + half)
     }
 
-    /** Moves the view to [to] - glides there from where it is, or starts there. */
-    private fun moveCamera(to: FloatArray) {
+    /**
+     * Moves the view to [to] - glides there from where it is, or starts there - then, for a pan
+     * ([b] one with its own view set by hand isn't), slowly on across its panel to its end.
+     */
+    private fun moveCamera(to: FloatArray, b: BubbleOverlay? = null) {
         val from = camera
         cameraJob?.cancel()
+        // KMK -->
+        val end = b?.takeIf { framings[frameKey(it)] == null }?.pan
+        if (end != null) {
+            val toEnd = floatArrayOf(end[2], end[3], end[4], to[3], to[4])
+            val travel = hypot((end[2] - end[0]) * width, (end[3] - end[1]) * height) * end[4]
+            val ms = (travel / (PAN_SPEED * width) * 1000f).toInt().coerceIn(PAN_MIN_MS, PAN_MAX_MS)
+            cameraJob = scope?.launch {
+                if (from == null || doubleTapZoomMillis <= 1) {
+                    setCamera(to)
+                } else {
+                    glide(from, to, CAMERA_MOVE_MS, FastOutSlowInEasing)
+                }
+                delay(PAN_HOLD_MS)
+                glide(to, toEnd, ms, PanEasing)
+            }
+            return
+        }
+        // KMK <--
         if (from == null || doubleTapZoomMillis <= 1) {
             setCamera(to)
             return
         }
-        cameraJob = scope?.launch {
-            Animatable(0f).animateTo(1f, tween(CAMERA_MOVE_MS, easing = FastOutSlowInEasing)) {
-                val t = value
-                setCamera(
-                    floatArrayOf(
-                        from[0] + (to[0] - from[0]) * t,
-                        from[1] + (to[1] - from[1]) * t,
-                        from[2] * (to[2] / from[2]).pow(t),
-                        to[3],
-                        to[4],
-                    ),
-                )
-            }
+        cameraJob = scope?.launch { glide(from, to, CAMERA_MOVE_MS, FastOutSlowInEasing) }
+    }
+
+    /** The view glided from [from] to [to] over [ms]. */
+    private suspend fun glide(from: FloatArray, to: FloatArray, ms: Int, easing: Easing) {
+        Animatable(0f).animateTo(1f, tween(ms, easing = easing)) {
+            val t = value
+            setCamera(
+                floatArrayOf(
+                    from[0] + (to[0] - from[0]) * t,
+                    from[1] + (to[1] - from[1]) * t,
+                    from[2] * (to[2] / from[2]).pow(t),
+                    to[3],
+                    to[4],
+                ),
+            )
         }
     }
 
@@ -1245,7 +1409,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
             if (frame != null) {
                 bubble = found
                 found.progress = 1f
-                moveCamera(frame)
+                moveCamera(frame, found)
                 return
             }
         }
@@ -1481,7 +1645,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     /** Logs [edit] on the debug page, with its bubbles as they now stand. */
     private fun logEdit(page: ImagePage.ImageSingle, edit: String) {
         val label = debugLabel?.takeIf { debugPage === page } ?: return
-        BubbleDebugLog.edit(label, edit, logBoxes(page, sequence.orEmpty()))
+        BubbleDebugLog.edit(label, edit, logBoxes(page, withoutPans(sequence.orEmpty())))
     }
 
     /** Debug: the open bubble moves [delta] places in the reading order. */
@@ -1600,7 +1764,10 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
     /** The page's bubbles in reading order, found once per page - see [stepBubble]. */
     private var sequence: List<BubbleOverlay>? = null
         set(value) {
-            field = value
+            // KMK -->
+            // Big panels panned across first, while reading - not while correcting the page.
+            field = value?.let { if (report == null) withPans(it) else unpanned(it) }
+            // KMK <--
             publishDebug()
         }
     private var sequencePage: ImagePage? = null
@@ -1638,7 +1805,8 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         sequence = stops
         if (bubbleDebug) startDebugLog(page, stops)
         prefetchNext()
-        return stops
+        // With any pans put among them.
+        return sequence ?: stops
         // KMK <--
     }
 
@@ -1666,7 +1834,8 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
         sequence = stops
         if (bubbleDebug) startDebugLog(page, stops)
         prefetchNext()
-        return stops
+        // With any pans put among them.
+        return sequence ?: stops
         // KMK <--
     }
 
@@ -1709,7 +1878,7 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
                 bubble = next
                 next.progress = 1f
                 releaseBubble(current)
-                moveCamera(frame)
+                moveCamera(frame, next)
                 return
             }
         }
@@ -2035,6 +2204,25 @@ open class ImageViewerState(var isVertical: Boolean = false, var isReversed: Boo
 
         /** How long the view takes to glide from one bubble to the next. */
         const val CAMERA_MOVE_MS = 380
+
+        // KMK -->
+        /** A pan: how fast it crosses its panel (screen widths a second), its least and most time. */
+        const val PAN_SPEED = 0.22f
+        const val PAN_MIN_MS = 1800
+        const val PAN_MAX_MS = 6000
+
+        /** How long a pan rests at its start before it moves. */
+        const val PAN_HOLD_MS = 450L
+
+        /** A panel is panned across when shown whole it would be this much smaller, or more. */
+        const val PAN_SMALLER = 0.8f
+
+        /** A panel with no text is panned across at the page's own size, about. */
+        const val PAN_ARTWORK_ZOOM = 1.1f
+
+        /** A pan's move: gently away, steady, gently in. */
+        val PanEasing = CubicBezierEasing(0.4f, 0f, 0.4f, 1f)
+        // KMK <--
 
         /** How far a hand framing in debug mode may zoom out and in. */
         const val CAMERA_MIN_ZOOM = 0.5f

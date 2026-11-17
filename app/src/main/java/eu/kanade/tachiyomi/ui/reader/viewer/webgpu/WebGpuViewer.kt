@@ -1105,6 +1105,7 @@ open class WebGpuViewer(
             pager.state.dimUpcoming = config.bubbleDimStrength.coerceIn(0, 100) / 100f
             pager.state.followPanel = config.bubbleFollowPanel
             pager.state.panelStops = config.bubblePanelStops
+            pager.state.panPanels = config.bubblePanPanels
             val outlines = config.bubbleZoom && config.bubbleShowOutlines
             if (pager.state.showOutlines != outlines) {
                 pager.state.showOutlines = outlines
@@ -2215,6 +2216,7 @@ open class WebGpuViewer(
         "minText=${config.bubbleMinTextHeight}",
         "showPanel=${config.bubbleShowPanel}",
         "followPanel=${config.bubbleFollowPanel}",
+        "pan=${config.bubblePanPanels}",
         "dim=${if (config.bubbleHideUpcoming) config.bubbleDimStrength else 0}",
     ).joinToString(",")
     // KMK <--

@@ -434,6 +434,12 @@ object SettingsReaderScreen : SearchableSettings {
                     enabled = bubbleZoom,
                 ).takeIf { webGpu },
                 Preference.PreferenceItem.SwitchPreference(
+                    preference = readerPreferences.bubblePanPanels(),
+                    title = stringResource(KMR.strings.pref_bubble_pan_panels),
+                    subtitle = stringResource(KMR.strings.pref_bubble_pan_panels_summary),
+                    enabled = bubbleZoom,
+                ).takeIf { webGpu },
+                Preference.PreferenceItem.SwitchPreference(
                     preference = readerPreferences.bubbleShowOutlines(),
                     title = stringResource(KMR.strings.pref_bubble_show_outlines),
                     subtitle = stringResource(KMR.strings.pref_bubble_show_outlines_summary),

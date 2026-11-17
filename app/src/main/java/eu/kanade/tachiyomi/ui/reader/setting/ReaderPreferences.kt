@@ -272,6 +272,8 @@ class ReaderPreferences(
     /** Panels with no bubbles are stops of their own while stepping, shown whole. */
     fun bubblePanelStops() = preferenceStore.getBoolean("webgpu_bubble_panel_stops", true)
 
+    fun bubblePanPanels() = preferenceStore.getBoolean("webgpu_bubble_pan_panels", true)
+
     /** While reading, the page's bubbles and panels outlined and numbered, as in debug mode. */
     fun bubbleShowOutlines() = preferenceStore.getBoolean("webgpu_bubble_show_outlines", false)
 
